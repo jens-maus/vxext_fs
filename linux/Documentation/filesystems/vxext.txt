@@ -112,9 +112,9 @@ filesystem implementation.
 Last, but not least, note that an "extended DOS" VxWorks filesystem can be
 also identified by the "VXEXT1.0" magic string at the boot sector of a
 partition and that the cluster size is not stored in the boot sector, but
-calculated on runtime like explained below.
+calculated on runtime like explained above.
 
-This filesystem implementætion was developed unter linux 2.6.7 running on an
+This filesystem implementation was developed unter linux 2.6.7 running on an
 AMD AthlonXP system. For testing, I first used a normal SCSI-II harddisk and
 connected it to an Adaptec 2940 SCSI-II controller. I was perfectly able to
 read all data from that harddisk, which was previously formatted/used in a
