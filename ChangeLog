@@ -6,6 +6,13 @@ VXEXT-FS - VxWorks extended DOS filesystem implementation
 $Id$
 $Source$
 
+2005-03-17  Jens Langner <Jens.Langner@light-speed.de>
+
+  * Makefile: added main Makefile which can be used to compile
+    the kernel module without having to patch the whole kernel
+    tree.
+  * misc: updated copyright to 2005
+
 2004-08-02  Jens Langner <Jens.Langner@light-speed.de>
 
   * first import of the VxWorks extended DOS filesystem

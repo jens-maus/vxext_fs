@@ -112,16 +112,25 @@ filesystem implementation.
 Last, but not least, note that an "extended DOS" VxWorks filesystem can be
 also identified by the "VXEXT1.0" magic string at the boot sector of a
 partition and that the cluster size is not stored in the boot sector, but
-calculated like explained below.
+calculated on runtime like explained below.
 
-The filesystem was developed unter linux 2.6.7 running on an AMD AthlonXP
-system. For testing, a VxWorks SCSI harddisk was attached to an Adaptec
-2940 SCSI-II controller.
+This filesystem implementætion was developed unter linux 2.6.7 running on an
+AMD AthlonXP system. For testing, I first used a normal SCSI-II harddisk and
+connected it to an Adaptec 2940 SCSI-II controller. I was perfectly able to
+read all data from that harddisk, which was previously formatted/used in a
+VxWorks system.
+
+Currently the filesystem is used on a productive system where a shared
+Ultra160 SCSI RAID system with two separate SCSI channels is used. One channel
+is connected to the old VxWorks system writing the data and the second channel
+to an Adaptec 29160 Ultra160 SCSI adapter running Gentoo Linux with kernel 2.6
+reading out the data right after the VxWorks system has written all necessary
+data.
 
 And to give you some idea why I started developing a filesystem driver for
 such an old VxWorks system: I am currently working at a medical facility
 which has on old (1995) PET tomograph that is controlled by a station
-running a VxWorks 5.2 system to which the raw acquisitiondata is transfered.
+running a VxWorks 5.2 system to which the raw acquisition data is transfered.
 And for quickly accessing the data we required to implement the filesystem
 on a linux server to which the SCSI bus of the VxWorks machines is connected.
 
