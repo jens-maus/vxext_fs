@@ -1,7 +1,7 @@
 /* vim:set ts=2 nowrap: ****************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
 
  $Id$
 
@@ -16,7 +16,7 @@ used in the VxWorks Real-Time Operating System developed by Wind River, Inc.
 Sources and development of this filesystem is largly based on the standard
 FAT and MSDOS filesystem routines found as part of the main linux kernel
 sources which are copyright by their respecitive authors mentioned there.
-However, minor cosmetic chnages have been made to the sources and non required
+However, minor cosmetic changes have been made to the sources and non required
 parts were removed wherever possible, making the sources easier to maintain.
 
 AUTHOR
@@ -53,5 +53,5 @@ of this filesystem you can share, please feel free to contact me.
 
 MORE INFORMATION
 ------------------------------
-Please consult the linux based vxext.txt filesystem documentation for more
-detailed information on the particular implemenation.
+Please consult the linux based vxext.txt filesystem documentation included in the
+driver for a more detailed information on the particular implemenation.
