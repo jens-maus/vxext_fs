@@ -16,11 +16,16 @@ dmask=###     -- The permission mask for the directory.
                  The default is the umask of current process.
 fmask=###     -- The permission mask for files.
                  The default is the umask of current process.
+uid=<uid>     -- The user id to which the files/dirs are owned
+                 The default is root (0)
+gid=<gid>     -- The group id to which the files/dirs are owned
+                 The default is root (0)
 quiet         -- Stops printing certain warning messages.
+debug         -- enable additional debugging information output
 
 TODO
 ----------------------------------------------------------------------
-* Make sure the filesystem works as expected in read/write mode
+* Make sure the filesystem works as expected in write mode
 
 POSSIBLE PROBLEMS
 ----------------------------------------------------------------------
