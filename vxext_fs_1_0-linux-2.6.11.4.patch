@@ -1,8 +1,8 @@
-diff -urNBb linux-2.6.7-org/Documentation/filesystems/00-INDEX linux-2.6.7/Documentation/filesystems/00-INDEX
---- linux-2.6.7-org/Documentation/filesystems/00-INDEX	2004-06-16 07:20:26.000000000 +0200
-+++ linux-2.6.7/Documentation/filesystems/00-INDEX	2005-03-17 12:55:15.811316334 +0100
-@@ -46,6 +46,8 @@
- 	- info on the umsdos extensions to the msdos filesystem.
+diff -urNBb linux-2.6.11.4-org/Documentation/filesystems/00-INDEX linux-2.6.11.4/Documentation/filesystems/00-INDEX
+--- linux-2.6.11.4-org/Documentation/filesystems/00-INDEX	2005-03-16 01:09:20.000000000 +0100
++++ linux-2.6.11.4/Documentation/filesystems/00-INDEX	2005-03-17 12:34:36.564564548 +0100
+@@ -44,6 +44,8 @@
+ 	- info on the ufs filesystem.
  vfat.txt
  	- info on using the VFAT filesystem used in Windows NT and Windows 95
 +vxfat.txt
@@ -10,9 +10,9 @@ diff -urNBb linux-2.6.7-org/Documentation/filesystems/00-INDEX linux-2.6.7/Docum
  vfs.txt
  	- Overview of the Virtual File System
  xfs.txt
-diff -urNBb linux-2.6.7-org/Documentation/filesystems/vxext.txt linux-2.6.7/Documentation/filesystems/vxext.txt
---- linux-2.6.7-org/Documentation/filesystems/vxext.txt	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/Documentation/filesystems/vxext.txt	2005-03-17 12:55:15.812316003 +0100
+diff -urNBb linux-2.6.11.4-org/Documentation/filesystems/vxext.txt linux-2.6.11.4/Documentation/filesystems/vxext.txt
+--- linux-2.6.11.4-org/Documentation/filesystems/vxext.txt	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/Documentation/filesystems/vxext.txt	2005-03-17 12:43:57.971660473 +0100
 @@ -0,0 +1,141 @@
 +USING VXEXT
 +----------------------------------------------------------------------
@@ -155,10 +155,10 @@ diff -urNBb linux-2.6.7-org/Documentation/filesystems/vxext.txt linux-2.6.7/Docu
 +Jens.Langner@light-speed.de
 +http://www.jens-langner.de/
 +March 2005
-diff -urNBb linux-2.6.7-org/fs/Kconfig linux-2.6.7/fs/Kconfig
---- linux-2.6.7-org/fs/Kconfig	2004-06-16 07:19:36.000000000 +0200
-+++ linux-2.6.7/fs/Kconfig	2005-03-17 12:55:15.813315672 +0100
-@@ -1316,6 +1316,36 @@
+diff -urNBb linux-2.6.11.4-org/fs/Kconfig linux-2.6.11.4/fs/Kconfig
+--- linux-2.6.11.4-org/fs/Kconfig	2005-03-16 01:09:07.000000000 +0100
++++ linux-2.6.11.4/fs/Kconfig	2005-03-17 12:34:36.566563886 +0100
+@@ -1307,6 +1307,36 @@
  	  Say Y here if you want to try writing to UFS partitions. This is
  	  experimental, so you should back up your UFS partitions beforehand.
  
@@ -195,20 +195,20 @@ diff -urNBb linux-2.6.7-org/fs/Kconfig linux-2.6.7/fs/Kconfig
  endmenu
  
  menu "Network File Systems"
-diff -urNBb linux-2.6.7-org/fs/Makefile linux-2.6.7/fs/Makefile
---- linux-2.6.7-org/fs/Makefile	2004-06-16 07:19:36.000000000 +0200
-+++ linux-2.6.7/fs/Makefile	2005-03-17 12:55:15.814315341 +0100
-@@ -58,6 +58,7 @@
- obj-$(CONFIG_UMSDOS_FS)		+= umsdos/
+diff -urNBb linux-2.6.11.4-org/fs/Makefile linux-2.6.11.4/fs/Makefile
+--- linux-2.6.11.4-org/fs/Makefile	2005-03-16 01:09:07.000000000 +0100
++++ linux-2.6.11.4/fs/Makefile	2005-03-17 12:34:36.567563555 +0100
+@@ -59,6 +59,7 @@
+ obj-$(CONFIG_FAT_FS)		+= fat/
  obj-$(CONFIG_MSDOS_FS)		+= msdos/
  obj-$(CONFIG_VFAT_FS)		+= vfat/
 +obj-$(CONFIG_VXEXT_FS)		+= vxext/
  obj-$(CONFIG_BFS_FS)		+= bfs/
  obj-$(CONFIG_ISO9660_FS)	+= isofs/
  obj-$(CONFIG_DEVFS_FS)		+= devfs/
-diff -urNBb linux-2.6.7-org/fs/vxext/Makefile linux-2.6.7/fs/vxext/Makefile
---- linux-2.6.7-org/fs/vxext/Makefile	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/Makefile	2005-03-17 12:55:15.814315341 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/Makefile linux-2.6.11.4/fs/vxext/Makefile
+--- linux-2.6.11.4-org/fs/vxext/Makefile	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/Makefile	2005-03-17 12:34:36.567563555 +0100
 @@ -0,0 +1,7 @@
 +#
 +# Makefile for the Linux VxWorks extended DOS filesystem support.
@@ -217,9 +217,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/Makefile linux-2.6.7/fs/vxext/Makefile
 +obj-$(CONFIG_VXEXT_FS) += vxext.o
 +
 +vxext-objs := cache.o dir.o file.o inode.o misc.o namei.o
-diff -urNBb linux-2.6.7-org/fs/vxext/cache.c linux-2.6.7/fs/vxext/cache.c
---- linux-2.6.7-org/fs/vxext/cache.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/cache.c	2005-03-17 12:55:15.815315010 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/cache.c linux-2.6.11.4/fs/vxext/cache.c
+--- linux-2.6.11.4-org/fs/vxext/cache.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/cache.c	2005-03-17 12:38:13.136849221 +0100
 @@ -0,0 +1,521 @@
 +/* vim:set ts=2 nowrap: ****************************************************
 +
@@ -742,9 +742,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/cache.c linux-2.6.7/fs/vxext/cache.c
 +
 +	return nr;
 +}
-diff -urNBb linux-2.6.7-org/fs/vxext/dir.c linux-2.6.7/fs/vxext/dir.c
---- linux-2.6.7-org/fs/vxext/dir.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/dir.c	2005-03-17 12:55:15.816314679 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/dir.c linux-2.6.11.4/fs/vxext/dir.c
+--- linux-2.6.11.4-org/fs/vxext/dir.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/dir.c	2005-03-17 12:38:13.137848890 +0100
 @@ -0,0 +1,326 @@
 +/* vim:set ts=2 nowrap: ****************************************************
 +
@@ -1072,9 +1072,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/dir.c linux-2.6.7/fs/vxext/dir.c
 +	
 +	return -ENOENT;
 +}
-diff -urNBb linux-2.6.7-org/fs/vxext/file.c linux-2.6.7/fs/vxext/file.c
---- linux-2.6.7-org/fs/vxext/file.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/file.c	2005-03-17 12:55:15.817314348 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/file.c linux-2.6.11.4/fs/vxext/file.c
+--- linux-2.6.11.4-org/fs/vxext/file.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/file.c	2005-03-17 12:38:13.137848890 +0100
 @@ -0,0 +1,155 @@
 +/* vim:set ts=2 nowrap: ****************************************************
 +
@@ -1231,9 +1231,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/file.c linux-2.6.7/fs/vxext/file.c
 +	inode->i_ctime = inode->i_mtime = CURRENT_TIME;
 +	mark_inode_dirty(inode);
 +}
-diff -urNBb linux-2.6.7-org/fs/vxext/inode.c linux-2.6.7/fs/vxext/inode.c
---- linux-2.6.7-org/fs/vxext/inode.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/inode.c	2005-03-17 12:55:15.819313687 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/inode.c linux-2.6.11.4/fs/vxext/inode.c
+--- linux-2.6.11.4-org/fs/vxext/inode.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/inode.c	2005-03-17 12:38:13.137848890 +0100
 @@ -0,0 +1,1210 @@
 +/* vim:set ts=2 nowrap: ****************************************************
 +
@@ -2445,9 +2445,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/inode.c linux-2.6.7/fs/vxext/inode.c
 +	unlock_kernel();
 +	return error;
 +}
-diff -urNBb linux-2.6.7-org/fs/vxext/misc.c linux-2.6.7/fs/vxext/misc.c
---- linux-2.6.7-org/fs/vxext/misc.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/misc.c	2005-03-17 12:55:15.820313356 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/misc.c linux-2.6.11.4/fs/vxext/misc.c
+--- linux-2.6.11.4-org/fs/vxext/misc.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/misc.c	2005-03-17 12:38:13.137848890 +0100
 @@ -0,0 +1,338 @@
 +/* vim:set ts=2 nowrap: ****************************************************
 +
@@ -2787,9 +2787,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/misc.c linux-2.6.7/fs/vxext/misc.c
 +
 +	return 0;
 +}
-diff -urNBb linux-2.6.7-org/fs/vxext/namei.c linux-2.6.7/fs/vxext/namei.c
---- linux-2.6.7-org/fs/vxext/namei.c	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/fs/vxext/namei.c	2005-03-17 12:55:15.821313025 +0100
+diff -urNBb linux-2.6.11.4-org/fs/vxext/namei.c linux-2.6.11.4/fs/vxext/namei.c
+--- linux-2.6.11.4-org/fs/vxext/namei.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/fs/vxext/namei.c	2005-03-17 12:38:13.137848890 +0100
 @@ -0,0 +1,642 @@
 +/* vim:set ts=2 nowrap: ****************************************************
 +
@@ -3433,9 +3433,9 @@ diff -urNBb linux-2.6.7-org/fs/vxext/namei.c linux-2.6.7/fs/vxext/namei.c
 +
 +module_init(init_vxext_fs)
 +module_exit(exit_vxext_fs)
-diff -urNBb linux-2.6.7-org/include/linux/vxext_fs.h linux-2.6.7/include/linux/vxext_fs.h
---- linux-2.6.7-org/include/linux/vxext_fs.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/include/linux/vxext_fs.h	2005-03-17 12:55:15.822312694 +0100
+diff -urNBb linux-2.6.11.4-org/include/linux/vxext_fs.h linux-2.6.11.4/include/linux/vxext_fs.h
+--- linux-2.6.11.4-org/include/linux/vxext_fs.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/include/linux/vxext_fs.h	2005-03-17 12:38:52.287884779 +0100
 @@ -0,0 +1,253 @@
 +#ifndef _LINUX_VXEXT_FS_H
 +#define _LINUX_VXEXT_FS_H
@@ -3690,9 +3690,9 @@ diff -urNBb linux-2.6.7-org/include/linux/vxext_fs.h linux-2.6.7/include/linux/v
 +#endif /* __KERNEL__ */
 +
 +#endif
-diff -urNBb linux-2.6.7-org/include/linux/vxext_fs_i.h linux-2.6.7/include/linux/vxext_fs_i.h
---- linux-2.6.7-org/include/linux/vxext_fs_i.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/include/linux/vxext_fs_i.h	2005-03-17 12:55:15.822312694 +0100
+diff -urNBb linux-2.6.11.4-org/include/linux/vxext_fs_i.h linux-2.6.11.4/include/linux/vxext_fs_i.h
+--- linux-2.6.11.4-org/include/linux/vxext_fs_i.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/include/linux/vxext_fs_i.h	2005-03-17 12:38:52.287884779 +0100
 @@ -0,0 +1,55 @@
 +#ifndef _VXEXT_FS_I
 +#define _VXEXT_FS_I
@@ -3749,9 +3749,9 @@ diff -urNBb linux-2.6.7-org/include/linux/vxext_fs_i.h linux-2.6.7/include/linux
 +};
 +
 +#endif
-diff -urNBb linux-2.6.7-org/include/linux/vxext_fs_sb.h linux-2.6.7/include/linux/vxext_fs_sb.h
---- linux-2.6.7-org/include/linux/vxext_fs_sb.h	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.7/include/linux/vxext_fs_sb.h	2005-03-17 12:55:15.823312363 +0100
+diff -urNBb linux-2.6.11.4-org/include/linux/vxext_fs_sb.h linux-2.6.11.4/include/linux/vxext_fs_sb.h
+--- linux-2.6.11.4-org/include/linux/vxext_fs_sb.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.11.4/include/linux/vxext_fs_sb.h	2005-03-17 12:38:52.287884779 +0100
 @@ -0,0 +1,81 @@
 +#ifndef _VXEXT_FS_SB
 +#define _VXEXT_FS_SB
