@@ -1,0 +1,12 @@
+---------------------------------------------------------
+VXEXT-FS - VxWorks extended DOS filesystem implementation
+---------------------------------------------------------
+// vim:set ts=2 nowrap:
+
+$Id$
+$Source$
+
+2004-08-02  Jens Langner <Jens.Langner@light-speed.de>
+
+  * first import of the VxWorks extended DOS filesystem
+    implementation for linux 2.6.7

@@ -1,0 +1,127 @@
+USING VXEXT
+----------------------------------------------------------------------
+To use the vxext filesystem, use the filesystem type 'vxext'.  i.e.
+  mount -t vxext /dev/sda /mnt
+
+No special partition formatter is required. But there doesn't exist
+any tool to create fresh VxWorks extended DOS partitions yet, so you
+currently require a real VxWorks 5.2+ system to format a harddisk with
+the extended DOS filesystem.
+
+VXEXT MOUNT OPTIONS
+----------------------------------------------------------------------
+umask=###     -- The permission mask (for files and directories, see umask(1)).
+                 The default is the umask of current process.
+dmask=###     -- The permission mask for the directory.
+                 The default is the umask of current process.
+fmask=###     -- The permission mask for files.
+                 The default is the umask of current process.
+quiet         -- Stops printing certain warning messages.
+
+TODO
+----------------------------------------------------------------------
+* Make sure the filesystem works as expected in read/write mode
+
+POSSIBLE PROBLEMS
+----------------------------------------------------------------------
+* The write implementation may not be as stable as expected and is
+  still considered experimental yet. So please be careful!
+
+BUG REPORTS
+----------------------------------------------------------------------
+If you have trouble with the VXEXT filesystem, mail bug reports to
+Jens.Langner@light-speed.de. Please specify the filename, the version
+and the operation that gave you trouble.
+
+NOTES ON THE STRUCTURE OF THE VXEXT1.0 FILESYSTEM
+----------------------------------------------------------------------
+This document presents a very rough, technical overview of my
+knowledge of the extended DOS file system used in VxWorks 5.2 and
+newer versions. I don't guarantee that any of the following is correct
+as this filesystem implementation is a reverse engineered version
+which has been developed without any official documentation/help from
+Wind River, the makers of VxWorks.
+However, my analyzes/work appear to be correct and also seem to work
+quiet stable.
+
+First of all, VxWorks v5+ comes with a so-called dosFS library which
+is a FAT16 DOS filesystem implementation library that is able to work
+in two different modes. One is the so-called "compatibility" mode in
+which the filesystem acts completly compatible to a standard FAT16
+DOS filesystem used in DOS versions up to 6.22.
+The other so-called "extended DOS" filesystem mode is almost identical
+to the other mode. However, the significant change has been the addition
+of "long" file names (up to 40 chars) aswell as being able to place
+more than 2 gigabyte of data on a single partition.
+
+And this is where this implementation jumps in. By analyzing several
+harddisks which I created on a VxWorks 5.2 system, I tried to find out
+where the exact differences are in comparison to a standard MSDOS FAT16
+filesystem. Fortuantly the adapations Wind River took are rather 
+dramatically and can be summarized as followed:
+
+ 1) To achieve long filename support of up to 40 chars length and
+    without any extension convention, VxWorks appears to use the
+    following directory entry structure instead of the standard
+    MSDOS/FAT16 directory structure:
+
+    struct vxext_dir_entry 
+    {
+      __u8    name[40];     // 0x00 - Filename max. 40 chars
+      __u8    reserved[13]; // 0x28 - Reserved
+      __u8    attr;         // 0x35 - File attributes
+      __u16   time;         // 0x36 - File creation time (ctime)
+      __u16   date;         // 0x38 - File creation date (cdate)
+      __u16   start;        // 0x40 - Starting cluster number
+      __u32   size;         // 0x42 - File size (in bytes)
+    };
+
+    As you can see the members are slightly different from what the
+    standard directory entry members look like. In addition the
+    directory entry is also larger than the standard one.
+
+ 2) As said, the extended DOS mode also allows to store more than 2GB
+    data on a single partition by using cluster sizes larger than 32K.
+    This of course breaks the standard FAT16 DOS filesystem specs as there
+    are only cluster sizes of up to 32K defined. However, not only this
+    makes the extended DOS version different from a standard FAT16 fs.
+    Also the fact that Wind River choose to allow cluster sizes not being
+    bound to power of 2 makes it totally different.  
+    
+    So what Wind River is actually doing is to check how much sectors a
+    specific partition/hard disk has and then divides it through the
+    maximum of 65536 possible clusters in a FAT16 table. Of course this
+    division can end up in a remainder as the total sectors might not
+    always be dividable through 65K. So in case this division is odd,
+    then the sectors per cluster size is increased by one:
+
+    sectors_per_cluster = total_sectors / 65536;
+    if(sectors_per_cluster % 65536)
+      sectors_per_cluster++;
+
+This pretty much sums it up as fortunatly all other FAT16 specific things
+had been untouched by Wind River, which made it quite easy to use the
+originaly Linux FAT16 filesystem implementation for developing this
+filesystem implementation.
+
+Last, but not least, note that an "extended DOS" VxWorks filesystem can be
+also identified by the "VXEXT1.0" magic string at the boot sector of a
+partition and that the cluster size is not stored in the boot sector, but
+calculated like explained below.
+
+The filesystem was developed unter linux 2.6.7 running on an AMD AthlonXP
+system. For testing, a VxWorks SCSI harddisk was attached to an Adaptec
+2940 SCSI-II controller.
+
+And to give you some idea why I started developing a filesystem driver for
+such an old VxWorks system: I am currently working at a medical facility
+which has on old (1995) PET tomograph that is controlled by a station
+running a VxWorks 5.2 system to which the raw acquisitiondata is transfered.
+And for quickly accessing the data we required to implement the filesystem
+on a linux server to which the SCSI bus of the VxWorks machines is connected.
+
+If you have any further questions, please feel free to contact me.
+
+Jens.Langner@light-speed.de
+http://www.jens-langner.de/
+August 2004
