@@ -32,7 +32,7 @@ SRC=linux/fs/vxext
 
 ifneq ($(KERNELRELEASE),)
 
-	obj-m :=		vxext.o
+	obj-m :=		$(SRC)/vxext.o
 
 	spc-objs := $(SRC)/cache.c \
 							$(SRC)/dir.c   \
