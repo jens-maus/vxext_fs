@@ -27,6 +27,37 @@ early August 2004. The current author is:
 Jens Langner <Jens.Langner@light-speed.de>
 http://www.jens-langner.de/
 
+INSTALLATION
+----------------------------
+Installation of this filesystem is mainly based on the way you want to
+integrate it into the linux kernel:
+
+- Compilation/Installation outside the kernel tree as a module (*.ko):
+   
+  1) Make sure you have installed the correct kernel sources for your
+     currently running linux system.
+  2) Unarchive the vxext_fs-x.x.tar.bz2 and cd into its subdirectory
+  3) run "make" and cross your fingers!
+  4) copy the final vxext.ko kernel module into the modules directory
+     "cp vxext.ko /lib/modules/`uname -r`/misc"
+  5) run "depmod -a"
+  6) run "modprobe vxext" to load the kernel module
+  7) mount your disk with "mount -t vxext /dev/sda"
+
+- Direct integration into the linux kernel tree and compilation
+  as either a module or compiled in filesystem:
+
+  1) Install the proper kernel source tree in /usr/src/linux
+  2) copy the vexet_fs_1_0-linux-X.X.X.patch patchfile to /usr/src/linux
+  3) change to the /usr/src/linux directory
+  4) run "patch -p1 <vxext_fs_1_0-linux.X.X.X.patch" to patch your kernel
+     tree
+  5) run "make menuconfig" and configure the VXEXT filesystem either as a
+     module or directly compiled into the kernel.
+  6) run "make ; make modules_install" in /usr/src/linux
+  7) reboot and have phun.
+  8) mount your disk with "mount -t vxext /dev/sda"
+     
 COPYRIGHT/LICENSE/WARRANTIES
 -----------------------------
 The sources and all other documents found in this archive are free software;
@@ -42,8 +73,8 @@ VxWorks is a registered trademark of Wind River, Inc.
 
 COMMENTS
 -----------------------------
-Please note that as this is a totally reverse engineered filesystem driver based
-on the results of an VxWorks 5.2 system no warranty can be given that it might
+Please note that as this is a completley reverse engineered filesystem driver based
+on the results of a VxWorks 5.2 system no warranty can be given that it might
 also work with later versions of VxWorks or any other brand of the VxWorks RTOS.
 Absolutly no documentation or official help from Wind River Inc was received 
 during the development of this implementation. So the implementation is only
