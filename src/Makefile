@@ -49,6 +49,14 @@ default:
 
 endif
 
+.IGNORE: patchkernel
+
+patchkernel:
+	mkdir /usr/src/linux/fs/vxext
+	cp *.c *.h Makefile /usr/src/linux/fs/vxext/
+	cp ../Documentation/filesystems/* /usr/src/linux/Documentation/filesystems/
+	patch -p1 -d /usr/src/linux < kernel.patch
+
 clean:
 	rm -f *.o
 	rm -f *.ko

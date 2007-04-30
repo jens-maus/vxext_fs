@@ -1,0 +1,63 @@
+diff -urNBb linux-2.6.11.4-org/Documentation/filesystems/00-INDEX linux-2.6.11.4/Documentation/filesystems/00-INDEX
+--- linux-2.6.11.4-org/Documentation/filesystems/00-INDEX	2005-03-16 01:09:20.000000000 +0100
++++ linux-2.6.11.4/Documentation/filesystems/00-INDEX	2005-03-17 12:34:36.564564548 +0100
+@@ -44,6 +44,8 @@
+ 	- info on the ufs filesystem.
+ vfat.txt
+ 	- info on using the VFAT filesystem used in Windows NT and Windows 95
++vxfat.txt
++	- info on using the VxWorks 5.2+ extended FAT filesystem
+ vfs.txt
+ 	- Overview of the Virtual File System
+ xfs.txt
+diff -urNBb linux-2.6.11.4-org/fs/Kconfig linux-2.6.11.4/fs/Kconfig
+--- linux-2.6.11.4-org/fs/Kconfig	2005-03-16 01:09:07.000000000 +0100
++++ linux-2.6.11.4/fs/Kconfig	2005-03-17 12:34:36.566563886 +0100
+@@ -1307,6 +1307,36 @@
+ 	  Say Y here if you want to try writing to UFS partitions. This is
+ 	  experimental, so you should back up your UFS partitions beforehand.
+ 
++config VXEXT_FS
++        tristate "VxWorks extended DOS fs support (EXPERIMENTAL)"
++	depends on EXPERIMENTAL
++	help
++	  The Real-Time Operating System VxWorks v5+ normally ships with an own
++	  FAT16 based DOS filesystem implementation that can work either in a
++	  compatibility mode or in a so-called "extended DOS" (VXEXT1.0) mode.
++	  
++	  While in compatibility mode the normal MSDOS filesystem can be used
++	  and therefore comes with all restrictions like 8+3 and a maximum of
++	  2GB on a partition, running the dosFS part of VxWorks in the
++	  extended version allows to have filenames of up to 40 characters length
++	  and allows to store more than a total of 2GB on a single partition.
++
++	  However, this makes it of course incompatible to the standard FAT16
++	  filesystem as it comes with some specialities for which this separate
++	  implementation is responsible for.
++
++	  So if you want to directly access "extended DOS" VxWorks partitions,
++	  you can select to compile the VXEXT file system support either as a
++	  module (M), or directly into the kernel.
++
++	  Please note that especially write support is highly considered
++	  experimental.
++
++	  So if you haven't heard about all of this before, it's safe to say N.
++
++	  For more information, please consult
++	  <file:Documentation/filesystems/vxext-fs.txt>.
++
+ endmenu
+ 
+ menu "Network File Systems"
+diff -urNBb linux-2.6.11.4-org/fs/Makefile linux-2.6.11.4/fs/Makefile
+--- linux-2.6.11.4-org/fs/Makefile	2005-03-16 01:09:07.000000000 +0100
++++ linux-2.6.11.4/fs/Makefile	2005-03-17 12:34:36.567563555 +0100
+@@ -59,6 +59,7 @@
+ obj-$(CONFIG_FAT_FS)		+= fat/
+ obj-$(CONFIG_MSDOS_FS)		+= msdos/
+ obj-$(CONFIG_VFAT_FS)		+= vfat/
++obj-$(CONFIG_VXEXT_FS)		+= vxext/
+ obj-$(CONFIG_BFS_FS)		+= bfs/
+ obj-$(CONFIG_ISO9660_FS)	+= isofs/
+ obj-$(CONFIG_DEVFS_FS)		+= devfs/
