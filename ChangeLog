@@ -4,7 +4,14 @@ VXEXT-FS - VxWorks extended DOS filesystem implementation
 // vim:set ts=2 nowrap:
 
 $Id$
-$Source$
+
+2007-04-30  Jens Langner <Jens.Langner@light-speed.de>
+
+  * misc: bumped version to 1.1 due to large changes.
+  * misc: adapted sources to latest linux kernel changes. vxext
+    should now be compatible with kernel versions 2.6.18+. Also
+    the build environment should now properly compile the module
+    without having to merge the changes into the kernel sources.
 
 2005-03-17  Jens Langner <Jens.Langner@light-speed.de>
 

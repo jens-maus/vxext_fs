@@ -29,8 +29,9 @@
 ***************************************************************************/
 
 #include <linux/fs.h>
-#include <linux/vxext_fs.h>
 #include <linux/buffer_head.h>
+
+#include "vxext_fs.h"
 
 /*
  * vxext_fs_panic reports a severe file system problem and sets the file system

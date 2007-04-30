@@ -31,8 +31,9 @@
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/buffer_head.h>
-#include <linux/vxext_fs.h>
 #include <linux/smp_lock.h>
+
+#include "vxext_fs.h"
 
 // normally this function is used to analyze filenames and check
 // if they conform. But as there are no real conventions for filenames
@@ -600,11 +601,11 @@ static int vx_fill_super(struct super_block *sb,void *data, int silent)
 	return 0;
 }
 
-static struct super_block *vxext_get_sb(struct file_system_type *fs_type,
-																				int flags, const char *dev_name,
-																				void *data)
+static int vxext_get_sb(struct file_system_type *fs_type,
+												int flags, const char *dev_name,
+												void *data, struct vfsmount *mnt)
 {
-	return get_sb_bdev(fs_type, flags, dev_name, data, vx_fill_super);
+	return get_sb_bdev(fs_type, flags, dev_name, data, vx_fill_super, mnt);
 }
 
 static struct file_system_type vxext_fs_type =
@@ -636,7 +637,7 @@ static void __exit exit_vxext_fs(void)
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jens Langner");
 MODULE_DESCRIPTION("VxWorks extended DOS filesystem support");
-MODULE_VERSION("1.0");
+MODULE_VERSION("1.1");
 
 module_init(init_vxext_fs)
 module_exit(exit_vxext_fs)

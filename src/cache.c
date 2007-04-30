@@ -1,7 +1,7 @@
 /* vim:set ts=2 nowrap: ****************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
 
  This filesystem module is a reverse engineered implementation of the so
  called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
@@ -29,8 +29,9 @@
 ***************************************************************************/
 
 #include <linux/fs.h>
-#include <linux/vxext_fs.h>
 #include <linux/buffer_head.h>
+
+#include "vxext_fs.h"
 
 int __vxext_access(struct super_block *sb, int nr, int new_value)
 {

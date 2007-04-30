@@ -1,7 +1,7 @@
 #/* vim:set ts=2 nowrap: ****************************************************
 #
 # VXEXT fs - VxWorks extended DOS filesystem support
-# Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
+# Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
 #
 # This filesystem module is a reverse engineered implementation of the so
 # called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
@@ -28,32 +28,31 @@
 #
 #***************************************************************************/
 
-SRC=linux/fs/vxext
-
 ifneq ($(KERNELRELEASE),)
 
-	obj-m :=		$(SRC)/vxext.o
+  obj-m := vxext.o
 
-	spc-objs := $(SRC)/cache.c \
-							$(SRC)/dir.c   \
-							$(SRC)/file.c  \
-							$(SRC)/inode.c \
-							$(SRC)/misc.c  \
-							$(SRC)/namei.c \
+	vxext-y := cache.o \
+	           dir.o   \
+					   file.o  \
+					   inode.o \
+					   misc.o  \
+					   namei.o
 
 else
 
-    KDIR := /lib/modules/$(shell uname -r)/build
-    PWD  := $(shell pwd)
+	KDIR := /lib/modules/$(shell uname -r)/build
+	PWD  := $(shell pwd)
 
 default:
-	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD)/$(SRC) modules
-	cp $(SRC)/vxext.ko .
+	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
 
 endif
 
 clean:
-	rm -f $(SRC)/*.o
-	rm -f $(SRC)/*.ko *.ko
-	rm -f $(SRC)/*.mod.c
-	rm -f $(SRC)/.*.cmd
+	rm -f *.o
+	rm -f *.ko
+	rm -f *.mod.c
+	rm -f .*.cmd
+	rm -f Module.symvers
+	rm -rf .tmp_versions

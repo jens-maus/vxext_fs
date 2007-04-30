@@ -29,23 +29,21 @@
 ***************************************************************************/
 
 #include <linux/time.h>
-#include <linux/vxext_fs.h>
 #include <linux/smp_lock.h>
 #include <linux/buffer_head.h>
 
-static ssize_t vxext_file_write(struct file *filp, const char __user *buf,
-																size_t count, loff_t *ppos);
+#include "vxext_fs.h"
 
 struct file_operations vxext_file_operations =
 {
-	.llseek		= generic_file_llseek,
-	.read			= generic_file_read,
-	.write		= vxext_file_write,
-	.mmap			= generic_file_mmap,
-	.fsync		= file_fsync,
-	.readv		= generic_file_readv,
-	.writev		= generic_file_writev,
-	.sendfile	= generic_file_sendfile,
+	.llseek		 = generic_file_llseek,
+	.read			 = do_sync_read,
+	.write		 = do_sync_write,
+  .aio_read  = generic_file_aio_read,
+  .aio_write = generic_file_aio_write,
+	.mmap			 = generic_file_mmap,
+	.fsync		 = file_fsync,
+	.sendfile	 = generic_file_sendfile,
 };
 
 struct inode_operations vxext_file_inode_operations =
@@ -102,23 +100,6 @@ int vxext_get_block(struct inode *inode, sector_t iblock,
 	set_buffer_new(bh_result);
 	map_bh(bh_result, sb, phys);
 	return 0;
-}
-
-static ssize_t vxext_file_write(struct file *filp, const char __user *buf,
-																size_t count, loff_t *ppos)
-{
-	struct inode *inode = filp->f_dentry->d_inode;
-	int retval;
-
-	retval = generic_file_write(filp, buf, count, ppos);
-	if (retval > 0)
-	{
-		inode->i_mtime = inode->i_ctime = CURRENT_TIME;
-		VXEXT_I(inode)->i_attrs |= ATTR_ARCH;
-		mark_inode_dirty(inode);
-	}
-
-	return retval;
 }
 
 void vxext_truncate(struct inode *inode)

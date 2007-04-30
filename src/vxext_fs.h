@@ -4,7 +4,7 @@
 /* vim:set ts=2 nowrap: ****************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
 
  This filesystem module is a reverse engineered implementation of the so
  called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
@@ -151,8 +151,9 @@ struct vxext_dir_entry
 #include <linux/buffer_head.h>
 #include <linux/string.h>
 #include <linux/nls.h>
-#include <linux/vxext_fs_i.h>
-#include <linux/vxext_fs_sb.h>
+
+#include "vxext_fs_i.h"
+#include "vxext_fs_sb.h"
 
 static inline struct vxext_sb_info *VXEXT_SB(struct super_block *sb)
 {
@@ -209,8 +210,8 @@ extern void vxext_clear_inode(struct inode *inode);
 extern void vxext_put_super(struct super_block *sb);
 int vxext_fill_super(struct super_block *sb, void *data, int silent,
 										struct inode_operations *fs_dir_inode_ops);
-extern int vxext_statfs(struct super_block *sb, struct kstatfs *buf);
-extern void vxext_write_inode(struct inode *inode, int wait);
+extern int vxext_statfs(struct dentry *dentry, struct kstatfs *buf);
+extern int vxext_write_inode(struct inode *inode, int wait);
 extern int vxext_notify_change(struct dentry * dentry, struct iattr * attr);
 
 // vxext/misc.c

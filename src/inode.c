@@ -1,7 +1,7 @@
 /* vim:set ts=2 nowrap: ****************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
 
  This filesystem module is a reverse engineered implementation of the so
  called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
@@ -33,13 +33,14 @@
 #include <linux/slab.h>
 #include <linux/smp_lock.h>
 #include <linux/seq_file.h>
-#include <linux/vxext_fs.h>
 #include <linux/pagemap.h>
 #include <linux/buffer_head.h>
 #include <linux/mount.h>
 #include <linux/vfs.h>
 #include <linux/parser.h>
 #include <asm/unaligned.h>
+
+#include "vxext_fs.h"
 
 /*
  * New FAT inode stuff. We do the following:
@@ -345,7 +346,6 @@ static int vxext_read_root(struct inode *inode)
 	inode->i_fop = &vxext_dir_operations;
 	VXEXT_I(inode)->i_start = 0;
 	inode->i_size = sbi->dir_entries * sizeof(struct vxext_dir_entry);
-	inode->i_blksize = sbi->cluster_size;
 	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
 			   & ~((loff_t)sbi->cluster_size - 1)) >> 9;
 	VXEXT_I(inode)->i_logstart = 0;
@@ -573,8 +573,7 @@ int __init vxext_init_inodecache(void)
 
 void __exit vxext_destroy_inodecache(void)
 {
-	if(kmem_cache_destroy(vxext_inode_cachep))
-		printk(KERN_INFO "vxext_inode_cache: not all structures were freed\n");
+	kmem_cache_destroy(vxext_inode_cachep);
 }
 
 static int vxext_remount(struct super_block *sb, int *flags, char *data)
@@ -939,26 +938,28 @@ out_fail:
 	return error;
 }
 
-int vxext_statfs(struct super_block *sb, struct kstatfs *buf)
+int vxext_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
+  struct vxext_sb_info *sbi = VXEXT_SB(dentry->d_sb);
+  struct super_block *sb = dentry->d_sb;
 	int free, nr, ret;
        
-	if(VXEXT_SB(sb)->free_clusters != -1)
+	if(sbi->free_clusters != -1)
 	{
-		free = VXEXT_SB(sb)->free_clusters;
+		free = sbi->free_clusters;
 	}
 	else
 	{
 		vxlock_fat(sb);
 		
-		if(VXEXT_SB(sb)->free_clusters != -1)
+		if(sbi->free_clusters != -1)
 		{
-			free = VXEXT_SB(sb)->free_clusters;
+			free = sbi->free_clusters;
 		}
 		else
 		{
 			free = 0;
-			for(nr = 2; nr < VXEXT_SB(sb)->clusters + 2; nr++)
+			for(nr = 2; nr < sbi->clusters + 2; nr++)
 			{
 				ret = vxext_access(sb, nr, -1);
 				if(ret < 0)
@@ -972,15 +973,15 @@ int vxext_statfs(struct super_block *sb, struct kstatfs *buf)
 				}
 			}
 
-			VXEXT_SB(sb)->free_clusters = free;
+			sbi->free_clusters = free;
 		}
 
 		vxunlock_fat(sb);
 	}
 
 	buf->f_type = sb->s_magic;
-	buf->f_bsize = VXEXT_SB(sb)->cluster_size;
-	buf->f_blocks = VXEXT_SB(sb)->clusters;
+	buf->f_bsize = sbi->cluster_size;
+	buf->f_blocks = sbi->clusters;
 	buf->f_bfree = free;
 	buf->f_bavail = free;
 	buf->f_namelen = VXEXT_NAMELEN; // VXEXT 1.0 support 40 chars filenames
@@ -1079,8 +1080,6 @@ static int vxext_fill_inode(struct inode *inode, struct vxext_dir_entry *de)
 	}
 
 	VXEXT_I(inode)->i_attrs = de->attr & ATTR_UNUSED;
-	// this is as close to the truth as we can get
-	inode->i_blksize = sbi->cluster_size;
 	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
 										 & ~((loff_t)sbi->cluster_size - 1)) >> 9;
 	inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
@@ -1093,18 +1092,19 @@ static int vxext_fill_inode(struct inode *inode, struct vxext_dir_entry *de)
 	return 0;
 }
 
-void vxext_write_inode(struct inode *inode, int wait)
+int vxext_write_inode(struct inode *inode, int wait)
 {
 	struct super_block *sb = inode->i_sb;
 	struct buffer_head *bh;
 	struct vxext_dir_entry *raw_entry;
 	loff_t i_pos;
+	int err = 0;
 
 retry:
 	i_pos = VXEXT_I(inode)->i_pos;
 	if(inode->i_ino == VXEXT_ROOT_INO || !i_pos)
 	{
-		return;
+		return 0;
 	}
 
 	lock_kernel();
@@ -1112,8 +1112,9 @@ retry:
 	{
 		printk(KERN_ERR "VXEXT: unable to read inode block "
 		       "for updating (i_pos %lld)\n", i_pos);
-		unlock_kernel();
-		return /* -EIO */;
+
+		err = -EIO;
+		goto out;
 	}
 
 	spin_lock(&vxext_inode_lock);
@@ -1147,8 +1148,13 @@ retry:
 	raw_entry->date = CT_LE_W(raw_entry->date);
 	spin_unlock(&vxext_inode_lock);
 	mark_buffer_dirty(bh);
+	if(wait)
+		err = sync_dirty_buffer(bh);
 	brelse(bh);
+
+out:
 	unlock_kernel();
+	return err;
 }
 
 int vxext_notify_change(struct dentry * dentry, struct iattr * attr)
