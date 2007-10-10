@@ -38,6 +38,7 @@
 #include <linux/mount.h>
 #include <linux/vfs.h>
 #include <linux/parser.h>
+#include <linux/exportfs.h>
 #include <asm/unaligned.h>
 
 #include "vxext_fs.h"
@@ -527,14 +528,12 @@ struct dentry *vxext_get_parent(struct dentry *child)
 		return parent;
 }
 
-static kmem_cache_t *vxext_inode_cachep;
+static struct kmem_cache *vxext_inode_cachep;
 
 static struct inode *vxext_alloc_inode(struct super_block *sb)
 {
 	struct vxext_inode_info *ei;
-
-	ei = (struct vxext_inode_info *)kmem_cache_alloc(vxext_inode_cachep, SLAB_KERNEL);
-
+	ei = (struct vxext_inode_info *)kmem_cache_alloc(vxext_inode_cachep, GFP_KERNEL);
 	if(!ei)
 		return NULL;
 
@@ -546,24 +545,21 @@ static void vxext_destroy_inode(struct inode *inode)
 	kmem_cache_free(vxext_inode_cachep, VXEXT_I(inode));
 }
 
-static void vxextinit_once(void * foo, kmem_cache_t * cachep, unsigned long flags)
+static void init_once(void * foo, struct kmem_cache * cachep, unsigned long flags)
 {
 	struct vxext_inode_info *ei = (struct vxext_inode_info *) foo;
 
-	if((flags & (SLAB_CTOR_VERIFY|SLAB_CTOR_CONSTRUCTOR)) ==
-	    SLAB_CTOR_CONSTRUCTOR)
-	{
-		INIT_LIST_HEAD(&ei->i_fat_hash);
-		inode_init_once(&ei->vfs_inode);
-	}
+	INIT_LIST_HEAD(&ei->i_fat_hash);
+	inode_init_once(&ei->vfs_inode);
 }
  
 int __init vxext_init_inodecache(void)
 {
 	vxext_inode_cachep = kmem_cache_create("vxext_inode_cache",
 					     sizeof(struct vxext_inode_info),
-					     0, SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT,
-					     vxextinit_once, NULL);
+                                             0, (SLAB_RECLAIM_ACCOUNT|
+                                                SLAB_MEM_SPREAD),
+                                             init_once);
 
 	if(vxext_inode_cachep == NULL)
 		return -ENOMEM;
