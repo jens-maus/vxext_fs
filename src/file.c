@@ -40,16 +40,11 @@ struct file_operations vxext_file_operations =
 	.llseek		 = generic_file_llseek,
 	.read		 = do_sync_read,
 	.write		 = do_sync_write,
-  	.aio_read  = generic_file_aio_read,
-  	.aio_write = generic_file_aio_write,
+  	.aio_read  	 = generic_file_aio_read,
+  	.aio_write 	 = generic_file_aio_write,
 	.mmap		 = generic_file_mmap,
 	.fsync		 = file_fsync,
-	#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,22))
-	.splice_read = generic_file_splice_read, 
-	.splice_write = generic_file_splice_write,
-	#else
-	.sendfile	 = generic_file_sendfile,
-	#endif
+	.splice_read 	 = generic_file_splice_read, 
 };
 
 struct inode_operations vxext_file_inode_operations =
