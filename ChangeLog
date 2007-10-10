@@ -5,6 +5,12 @@ VXEXT-FS - VxWorks extended DOS filesystem implementation
 
 $Id$
 
+2007-10-10  Jens Langner <Jens.Langner@light-speed.de>
+
+  * misc: bumped version to 1.2 due to large changes.
+  * misc: adapted sources to latest linux kernel changes which
+    rendered our vxext driver incompatible to kernel 2.6.23+
+
 2007-04-30  Jens Langner <Jens.Langner@light-speed.de>
 
   * misc: bumped version to 1.1 due to large changes.
