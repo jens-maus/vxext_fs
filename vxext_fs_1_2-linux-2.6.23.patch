@@ -1,0 +1,3884 @@
+diff -urNBb linux-2.6.23-org/Documentation/filesystems/00-INDEX linux-2.6.23/Documentation/filesystems/00-INDEX
+--- linux-2.6.23-org/Documentation/filesystems/00-INDEX	2007-10-09 22:31:38.000000000 +0200
++++ linux-2.6.23/Documentation/filesystems/00-INDEX	2007-10-24 12:50:46.000000000 +0200
+@@ -88,6 +88,8 @@
+ 	- info on the ufs filesystem.
+ vfat.txt
+ 	- info on using the VFAT filesystem used in Windows NT and Windows 95
++vxext.txt
++	- info on using the VxWorks 5.2+ extended FAT filesystem
+ vfs.txt
+ 	- overview of the Virtual File System
+ xfs.txt
+diff -urNBb linux-2.6.23-org/Documentation/filesystems/vxext.txt linux-2.6.23/Documentation/filesystems/vxext.txt
+--- linux-2.6.23-org/Documentation/filesystems/vxext.txt	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/Documentation/filesystems/vxext.txt	2007-10-24 12:49:08.000000000 +0200
+@@ -0,0 +1,141 @@
++USING VXEXT
++----------------------------------------------------------------------
++To use the vxext filesystem, use the filesystem type 'vxext'.  i.e.
++  mount -t vxext /dev/sda /mnt
++
++No special partition formatter is required. But there doesn't exist
++any tool to create fresh VxWorks extended DOS partitions yet, so you
++currently require a real VxWorks 5.2+ system to format a harddisk with
++the extended DOS filesystem.
++
++VXEXT MOUNT OPTIONS
++----------------------------------------------------------------------
++umask=###     -- The permission mask (for files and directories, see umask(1)).
++                 The default is the umask of current process.
++dmask=###     -- The permission mask for the directory.
++                 The default is the umask of current process.
++fmask=###     -- The permission mask for files.
++                 The default is the umask of current process.
++uid=<uid>     -- The user id to which the files/dirs are owned
++                 The default is root (0)
++gid=<gid>     -- The group id to which the files/dirs are owned
++                 The default is root (0)
++quiet         -- Stops printing certain warning messages.
++debug         -- enable additional debugging information output
++
++TODO
++----------------------------------------------------------------------
++* Make sure the filesystem works as expected in write mode
++
++POSSIBLE PROBLEMS
++----------------------------------------------------------------------
++* The write implementation may not be as stable as expected and is
++  still considered experimental yet. So please be careful!
++
++BUG REPORTS
++----------------------------------------------------------------------
++If you have trouble with the VXEXT filesystem, mail bug reports to
++Jens.Langner@light-speed.de. Please specify the filename, the version
++and the operation that gave you trouble.
++
++NOTES ON THE STRUCTURE OF THE VXEXT1.0 FILESYSTEM
++----------------------------------------------------------------------
++This document presents a very rough, technical overview of my
++knowledge of the extended DOS file system used in VxWorks 5.2 and
++newer versions. I don't guarantee that any of the following is correct
++as this filesystem implementation is a reverse engineered version
++which has been developed without any official documentation/help from
++Wind River, the makers of VxWorks.
++However, my analyzes/work appear to be correct and also seem to work
++quiet stable.
++
++First of all, VxWorks v5+ comes with a so-called dosFS library which
++is a FAT16 DOS filesystem implementation library that is able to work
++in two different modes. One is the so-called "compatibility" mode in
++which the filesystem acts completly compatible to a standard FAT16
++DOS filesystem used in DOS versions up to 6.22.
++The other so-called "extended DOS" filesystem mode is almost identical
++to the other mode. However, the significant change has been the addition
++of "long" file names (up to 40 chars) aswell as being able to place
++more than 2 gigabyte of data on a single partition.
++
++And this is where this implementation jumps in. By analyzing several
++harddisks which I created on a VxWorks 5.2 system, I tried to find out
++where the exact differences are in comparison to a standard MSDOS FAT16
++filesystem. Fortuantly the adapations Wind River took are rather 
++dramatically and can be summarized as followed:
++
++ 1) To achieve long filename support of up to 40 chars length and
++    without any extension convention, VxWorks appears to use the
++    following directory entry structure instead of the standard
++    MSDOS/FAT16 directory structure:
++
++    struct vxext_dir_entry 
++    {
++      __u8    name[40];     // 0x00 - Filename max. 40 chars
++      __u8    reserved[13]; // 0x28 - Reserved
++      __u8    attr;         // 0x35 - File attributes
++      __u16   time;         // 0x36 - File creation time (ctime)
++      __u16   date;         // 0x38 - File creation date (cdate)
++      __u16   start;        // 0x40 - Starting cluster number
++      __u32   size;         // 0x42 - File size (in bytes)
++    };
++
++    As you can see the members are slightly different from what the
++    standard directory entry members look like. In addition the
++    directory entry is also larger than the standard one.
++
++ 2) As said, the extended DOS mode also allows to store more than 2GB
++    data on a single partition by using cluster sizes larger than 32K.
++    This of course breaks the standard FAT16 DOS filesystem specs as there
++    are only cluster sizes of up to 32K defined. However, not only this
++    makes the extended DOS version different from a standard FAT16 fs.
++    Also the fact that Wind River choose to allow cluster sizes not being
++    bound to power of 2 makes it totally different.  
++    
++    So what Wind River is actually doing is to check how much sectors a
++    specific partition/hard disk has and then divides it through the
++    maximum of 65536 possible clusters in a FAT16 table. Of course this
++    division can end up in a remainder as the total sectors might not
++    always be dividable through 65K. So in case this division is odd,
++    then the sectors per cluster size is increased by one:
++
++    sectors_per_cluster = total_sectors / 65536;
++    if(sectors_per_cluster % 65536)
++      sectors_per_cluster++;
++
++This pretty much sums it up as fortunatly all other FAT16 specific things
++had been untouched by Wind River, which made it quite easy to use the
++originaly Linux FAT16 filesystem implementation for developing this
++filesystem implementation.
++
++Last, but not least, note that an "extended DOS" VxWorks filesystem can be
++also identified by the "VXEXT1.0" magic string at the boot sector of a
++partition and that the cluster size is not stored in the boot sector, but
++calculated on runtime like explained above.
++
++This filesystem implementation was developed unter linux 2.6.7 running on an
++AMD AthlonXP system. For testing, I first used a normal SCSI-II harddisk and
++connected it to an Adaptec 2940 SCSI-II controller. I was perfectly able to
++read all data from that harddisk, which was previously formatted/used in a
++VxWorks system.
++
++Currently the filesystem is used on a productive system where a shared
++Ultra160 SCSI RAID system with two separate SCSI channels is used. One channel
++is connected to the old VxWorks system writing the data and the second channel
++to an Adaptec 29160 Ultra160 SCSI adapter running Gentoo Linux with kernel 2.6
++reading out the data right after the VxWorks system has written all necessary
++data.
++
++And to give you some idea why I started developing a filesystem driver for
++such an old VxWorks system: I am currently working at a medical facility
++which has on old (1995) PET tomograph that is controlled by a station
++running a VxWorks 5.2 system to which the raw acquisition data is transfered.
++And for quickly accessing the data we required to implement the filesystem
++on a linux server to which the SCSI bus of the VxWorks machines is connected.
++
++If you have any further questions, please feel free to contact me.
++
++Jens.Langner@light-speed.de
++http://www.jens-langner.de/
++March 2005
+diff -urNBb linux-2.6.23-org/fs/Kconfig linux-2.6.23/fs/Kconfig
+--- linux-2.6.23-org/fs/Kconfig	2007-10-09 22:31:38.000000000 +0200
++++ linux-2.6.23/fs/Kconfig	2007-10-24 12:49:08.000000000 +0200
+@@ -1514,6 +1514,36 @@
+ 	  Y here.  This will result in _many_ additional debugging messages to be
+ 	  written to the system log.
+ 
++config VXEXT_FS
++        tristate "VxWorks extended DOS fs support (EXPERIMENTAL)"
++	depends on EXPERIMENTAL
++	help
++	  The Real-Time Operating System VxWorks v5+ normally ships with an own
++	  FAT16 based DOS filesystem implementation that can work either in a
++	  compatibility mode or in a so-called "extended DOS" (VXEXT1.0) mode.
++	  
++	  While in compatibility mode the normal MSDOS filesystem can be used
++	  and therefore comes with all restrictions like 8+3 and a maximum of
++	  2GB on a partition, running the dosFS part of VxWorks in the
++	  extended version allows to have filenames of up to 40 characters length
++	  and allows to store more than a total of 2GB on a single partition.
++
++	  However, this makes it of course incompatible to the standard FAT16
++	  filesystem as it comes with some specialities for which this separate
++	  implementation is responsible for.
++
++	  So if you want to directly access "extended DOS" VxWorks partitions,
++	  you can select to compile the VXEXT file system support either as a
++	  module (M), or directly into the kernel.
++
++	  Please note that especially write support is highly considered
++	  experimental.
++
++	  So if you haven't heard about all of this before, it's safe to say N.
++
++	  For more information, please consult
++	  <file:Documentation/filesystems/vxext-fs.txt>.
++
+ endmenu
+ 
+ menu "Network File Systems"
+diff -urNBb linux-2.6.23-org/fs/Makefile linux-2.6.23/fs/Makefile
+--- linux-2.6.23-org/fs/Makefile	2007-10-09 22:31:38.000000000 +0200
++++ linux-2.6.23/fs/Makefile	2007-10-24 12:49:08.000000000 +0200
+@@ -79,6 +79,7 @@
+ obj-$(CONFIG_FAT_FS)		+= fat/
+ obj-$(CONFIG_MSDOS_FS)		+= msdos/
+ obj-$(CONFIG_VFAT_FS)		+= vfat/
++obj-$(CONFIG_VXEXT_FS)		+= vxext/
+ obj-$(CONFIG_BFS_FS)		+= bfs/
+ obj-$(CONFIG_ISO9660_FS)	+= isofs/
+ obj-$(CONFIG_HFSPLUS_FS)	+= hfsplus/ # Before hfs to find wrapped HFS+
+diff -urNBb linux-2.6.23-org/fs/vxext/Makefile linux-2.6.23/fs/vxext/Makefile
+--- linux-2.6.23-org/fs/vxext/Makefile	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/Makefile	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,66 @@
++#/* vim:set ts=2 nowrap: ****************************************************
++#
++# VXEXT fs - VxWorks extended DOS filesystem support
++# Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
++#
++# This filesystem module is a reverse engineered implementation of the so
++# called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++# RTOS operating system. The sources are largly based on the FAT and MSDOS
++# filesystem routines found in the main Linux kernel sources which are
++# copyright by their respecitive authors. However, minor cosmetic changes
++# have been made and non-required parts were removed wherever possible.
++#
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 2 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++#
++# $Id: Makefile 21 2007-04-30 14:45:02Z langner $
++#
++#***************************************************************************/
++
++ifneq ($(KERNELRELEASE),)
++
++  obj-m := vxext.o
++
++	vxext-y := cache.o \
++	           dir.o   \
++					   file.o  \
++					   inode.o \
++					   misc.o  \
++					   namei.o
++
++else
++
++	KDIR := /lib/modules/$(shell uname -r)/build
++	PWD  := $(shell pwd)
++
++default:
++	$(MAKE) -C $(KDIR) SUBDIRS=$(PWD) modules
++
++endif
++
++.IGNORE: patchkernel
++
++patchkernel:
++	mkdir /usr/src/linux/fs/vxext
++	cp *.c *.h Makefile /usr/src/linux/fs/vxext/
++	cp ../Documentation/* /usr/src/linux/Documentation/filesystems/
++	patch -p1 -d /usr/src/linux < kernel.patch
++
++clean:
++	rm -f *.o
++	rm -f *.ko
++	rm -f *.mod.c
++	rm -f .*.cmd
++	rm -f Module.symvers
++	rm -rf .tmp_versions
+diff -urNBb linux-2.6.23-org/fs/vxext/cache.c linux-2.6.23/fs/vxext/cache.c
+--- linux-2.6.23-org/fs/vxext/cache.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/cache.c	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,522 @@
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: cache.c 14 2007-04-30 13:56:08Z langner $
++
++***************************************************************************/
++
++#include <linux/fs.h>
++#include <linux/buffer_head.h>
++
++#include "vxext_fs.h"
++
++int __vxext_access(struct super_block *sb, int nr, int new_value)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	struct buffer_head *bh, *bh2, *c_bh, *c_bh2;
++	unsigned char *p_first, *p_last;
++	int copy, first, last, next, b;
++
++	first = last = nr*2;
++	b = sbi->fat_start + (first >> sb->s_blocksize_bits);
++
++	if(!(bh = sb_bread(sb, b)))
++	{
++		printk(KERN_ERR "VXEXT: bread(block %d) in vxext_access failed\n", b);
++		
++		return -EIO;
++	}
++
++	if((first >> sb->s_blocksize_bits) == (last >> sb->s_blocksize_bits))
++	{
++		bh2 = bh;
++	}
++	else
++	{
++		if(!(bh2 = sb_bread(sb, b + 1)))
++		{
++			brelse(bh);
++			printk(KERN_ERR "VXEXT: bread(block %d) in vxext_access failed\n",
++						 b + 1);
++
++			return -EIO;
++		}
++	}
++
++	p_first = p_last = NULL; // GCC needs that stuff
++	next = CF_LE_W(((__u16 *) bh->b_data)[(first & (sb->s_blocksize - 1)) >> 1]);
++
++	if(new_value != -1) 
++	{
++		((__u16 *)bh->b_data)[(first & (sb->s_blocksize - 1)) >> 1] = CT_LE_W(new_value);
++		mark_buffer_dirty(bh);
++
++		for(copy = 1; copy < sbi->fats; copy++)
++		{
++			b = sbi->fat_start + (first >> sb->s_blocksize_bits)
++				+ sbi->fat_length * copy;
++
++			if(!(c_bh = sb_bread(sb, b)))
++				break;
++			
++			if(bh != bh2)
++			{
++				if(!(c_bh2 = sb_bread(sb, b+1)))
++				{
++					brelse(c_bh);
++					break;
++				}
++
++				memcpy(c_bh2->b_data, bh2->b_data, sb->s_blocksize);
++				mark_buffer_dirty(c_bh2);
++				brelse(c_bh2);
++			}
++
++			memcpy(c_bh->b_data, bh->b_data, sb->s_blocksize);
++			mark_buffer_dirty(c_bh);
++			brelse(c_bh);
++		}
++	}
++
++	brelse(bh);
++	
++	if(bh != bh2)
++		brelse(bh2);
++	
++	return next;
++}
++
++/* 
++ * Returns the this'th FAT entry, -1 if it is an end-of-file entry. If
++ * new_value is != -1, that FAT entry is replaced by it.
++ */
++int vxext_access(struct super_block *sb, int nr, int new_value)
++{
++	int next;
++
++	next = -EIO;
++	if(nr < 2 || VXEXT_SB(sb)->clusters + 2 <= nr)
++	{
++		vxext_fs_panic(sb, "invalid access to FAT (entry 0x%08x)", nr);
++		goto out;
++	}
++
++	if(new_value == FAT_ENT_EOF)
++		new_value = EOF_FAT16;
++
++	next = __vxext_access(sb, nr, new_value);
++	if(next < 0)
++		goto out;
++	
++	if(next >= BAD_FAT16)
++		next = FAT_ENT_EOF;
++
++out:
++	return next;
++}
++
++void vxext_cache_init(struct super_block *sb)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	int count;
++
++	spin_lock_init(&sbi->cache_lock);
++
++	for(count = 0; count < FAT_CACHE_NR - 1; count++)
++	{
++		sbi->cache_array[count].start_cluster = 0;
++		sbi->cache_array[count].next = &sbi->cache_array[count + 1];
++	}
++
++	sbi->cache_array[count].start_cluster = 0;
++	sbi->cache_array[count].next = NULL;
++	sbi->cache = sbi->cache_array;
++}
++
++void vxext_cache_lookup(struct inode *inode, int cluster, int *f_clu, int *d_clu)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
++	struct vxext_cache *walk;
++	int first;
++
++	BUG_ON(cluster == 0);
++	
++	first = VXEXT_I(inode)->i_start;
++	if(!first)
++		return;
++
++	spin_lock(&sbi->cache_lock);
++
++	if(VXEXT_I(inode)->disk_cluster &&
++	   VXEXT_I(inode)->file_cluster <= cluster)
++  {
++		*d_clu = VXEXT_I(inode)->disk_cluster;
++		*f_clu = VXEXT_I(inode)->file_cluster;
++	}
++
++	for(walk = sbi->cache; walk; walk = walk->next)
++	{
++		if(walk->start_cluster == first
++		    && walk->file_cluster <= cluster
++		    && walk->file_cluster > *f_clu)
++		{
++			*d_clu = walk->disk_cluster;
++			*f_clu = walk->file_cluster;
++
++			#ifdef DEBUG
++			printk("cache hit: %d (%d)\n", *f_clu, *d_clu);
++			#endif
++			
++			if(*f_clu == cluster)
++				goto out;
++		}
++	}
++
++	#ifdef DEBUG
++	printk("cache miss\n");
++	#endif
++
++out:
++	spin_unlock(&sbi->cache_lock);
++}
++
++#ifdef DEBUG
++static void list_cache(struct super_block *sb)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	struct vxext_cache *walk;
++
++	for(walk = sbi->cache; walk; walk = walk->next)
++	{
++		if(walk->start_cluster)
++			printk("<%s,%d>(%d,%d) ", sb->s_id,
++			       walk->start_cluster, walk->file_cluster,
++			       walk->disk_cluster);
++		else
++			printk("-- ");
++	}
++	printk("\n");
++}
++#endif
++
++/*
++ * Cache invalidation occurs rarely, thus the LRU chain is not updated. It
++ * fixes itself after a while.
++ */
++static void __vxext_cache_inval_inode(struct inode *inode)
++{
++	struct vxext_cache *walk;
++	int first = VXEXT_I(inode)->i_start;
++
++	VXEXT_I(inode)->file_cluster = VXEXT_I(inode)->disk_cluster = 0;
++	
++	for(walk = VXEXT_SB(inode->i_sb)->cache; walk; walk = walk->next)
++	{
++		if(walk->start_cluster == first)
++		{
++			walk->start_cluster = 0;
++		}
++	}
++}
++
++void vxext_cache_inval_inode(struct inode *inode)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
++	
++	spin_lock(&sbi->cache_lock);
++	__vxext_cache_inval_inode(inode);
++	spin_unlock(&sbi->cache_lock);
++}
++
++void vxext_cache_add(struct inode *inode, int f_clu, int d_clu)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
++	struct vxext_cache *walk, *last;
++	int first, prev_f_clu, prev_d_clu;
++
++	if (f_clu == 0)
++		return;
++
++	first = VXEXT_I(inode)->i_start;
++	if (!first)
++		return;
++
++	last = NULL;
++	spin_lock(&sbi->cache_lock);
++
++	if(VXEXT_I(inode)->file_cluster == f_clu)
++	{
++		goto out;
++	}
++	else
++	{
++		prev_f_clu = VXEXT_I(inode)->file_cluster;
++		prev_d_clu = VXEXT_I(inode)->disk_cluster;
++		VXEXT_I(inode)->file_cluster = f_clu;
++		VXEXT_I(inode)->disk_cluster = d_clu;
++
++		if(prev_f_clu == 0)
++			goto out;
++		
++		f_clu = prev_f_clu;
++		d_clu = prev_d_clu;
++	}
++	
++	for(walk = sbi->cache; walk->next; walk = (last = walk)->next)
++	{
++		if(walk->start_cluster == first &&
++		   walk->file_cluster == f_clu)
++		{
++			if(walk->disk_cluster != d_clu)
++			{
++				printk(KERN_ERR "VXEXT: cache corruption "
++				       "(i_pos %lld)\n", VXEXT_I(inode)->i_pos);
++				__vxext_cache_inval_inode(inode);
++
++				goto out;
++			}
++
++			if(last == NULL)
++				goto out;
++
++			// update LRU
++			last->next = walk->next;
++			walk->next = sbi->cache;
++			sbi->cache = walk;
++			#ifdef DEBUG
++			list_cache();
++			#endif
++			
++			goto out;
++		}
++	}
++
++	walk->start_cluster = first;
++	walk->file_cluster = f_clu;
++	walk->disk_cluster = d_clu;
++	last->next = NULL;
++	walk->next = sbi->cache;
++	sbi->cache = walk;
++	#ifdef DEBUG
++	list_cache();
++	#endif
++out:
++	spin_unlock(&sbi->cache_lock);
++}
++
++int vxext_get_cluster(struct inode *inode, int cluster, int *fclus, int *dclus)
++{
++	struct super_block *sb = inode->i_sb;
++	int limit = ((unsigned long)sb->s_maxbytes) / VXEXT_SB(sb)->cluster_size;
++	int nr;
++
++	// vxworks uses cluster sizes not bound to base 2 so lets see if we
++	// need to add a cluster or not.
++	if(((unsigned long)sb->s_maxbytes) % VXEXT_SB(sb)->cluster_size)
++		limit++;
++	
++	BUG_ON(VXEXT_I(inode)->i_start == 0);
++	
++	*fclus = 0;
++	*dclus = VXEXT_I(inode)->i_start;
++	if (cluster == 0)
++		return 0;
++
++	vxext_cache_lookup(inode, cluster, fclus, dclus);
++	while(*fclus < cluster)
++	{
++		// prevent the infinite loop of cluster chain
++		if(*fclus > limit)
++		{
++			vxext_fs_panic(sb, "%s: detected the cluster chain loop"
++				     " (i_pos %lld)", __FUNCTION__,
++				     VXEXT_I(inode)->i_pos);
++			return -EIO;
++		}
++
++		nr = vxext_access(sb, *dclus, -1);
++		if(nr < 0)
++		{
++ 			return nr;
++		}
++		else if(nr == FAT_ENT_FREE)
++		{
++			vxext_fs_panic(sb, "%s: invalid cluster chain"
++				     " (i_pos %lld)", __FUNCTION__,
++				     VXEXT_I(inode)->i_pos);
++			return -EIO;
++		}
++		else if(nr == FAT_ENT_EOF)
++		{
++			vxext_cache_add(inode, *fclus, *dclus);
++			return FAT_ENT_EOF;
++		}
++
++		(*fclus)++;
++		*dclus = nr;
++	}
++
++	vxext_cache_add(inode, *fclus, *dclus);
++	return 0;
++}
++
++static int vxext_bmap_cluster(struct inode *inode, int cluster)
++{
++	struct super_block *sb = inode->i_sb;
++	int ret, fclus, dclus;
++
++	if(VXEXT_I(inode)->i_start == 0)
++		return 0;
++
++	ret = vxext_get_cluster(inode, cluster, &fclus, &dclus);
++
++	if(ret < 0)
++	{
++		return ret;
++	}
++	else if(ret == FAT_ENT_EOF)
++	{
++		vxext_fs_panic(sb, "%s: request beyond EOF (i_pos %lld %ld)",
++			     __FUNCTION__, VXEXT_I(inode)->i_pos, cluster);
++
++		return -EIO;
++	}
++	
++	return dclus;
++}
++
++int vxext_bmap(struct inode *inode, sector_t sector, sector_t *phys)
++{
++	struct super_block *sb = inode->i_sb;
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	sector_t last_block;
++	int cluster, offset;
++
++	*phys = 0;
++	if((inode->i_ino == VXEXT_ROOT_INO || (S_ISDIR(inode->i_mode) &&
++	    !VXEXT_I(inode)->i_start)))
++	{
++		if (sector < (sbi->dir_entries >> sbi->dir_per_block_bits))
++			*phys = sector + sbi->dir_start;
++
++		return 0;
++	}
++
++	last_block = (VXEXT_I(inode)->mmu_private + (sb->s_blocksize - 1))
++		>> sb->s_blocksize_bits;
++
++	if(sector >= last_block)
++		return 0;
++
++	cluster = ((unsigned long)sector) / sbi->sec_per_clus; 
++	offset  = ((unsigned long)sector) % sbi->sec_per_clus;
++	cluster = vxext_bmap_cluster(inode, cluster);
++
++	if(cluster < 0)
++	{
++		return cluster;
++	}
++	else if (cluster) 
++	{
++		*phys = ((sector_t)cluster - 2) * sbi->sec_per_clus
++			+ sbi->data_start + offset;
++	}
++
++	return 0;
++}
++
++// Free all clusters after the skip'th cluster.
++int vxext_free(struct inode *inode, int skip)
++{
++	struct super_block *sb = inode->i_sb;
++	int nr, ret, fclus, dclus;
++
++	if(VXEXT_I(inode)->i_start == 0)
++		return 0;
++
++	if(skip)
++	{
++		ret = vxext_get_cluster(inode, skip - 1, &fclus, &dclus);
++		if (ret < 0)
++			return ret;
++		else if (ret == FAT_ENT_EOF)
++			return 0;
++
++		nr = vxext_access(sb, dclus, -1);
++		if (nr == FAT_ENT_EOF)
++		{
++			return 0;
++		}
++		else if (nr > 0)
++		{
++			// write a new EOF, and get the remaining cluster
++			// chain for freeing. 
++			nr = vxext_access(sb, dclus, FAT_ENT_EOF);
++		}
++
++		if(nr < 0)
++			return nr;
++
++		vxext_cache_inval_inode(inode);
++	}
++	else
++	{
++		vxext_cache_inval_inode(inode);
++
++		nr = VXEXT_I(inode)->i_start;
++		VXEXT_I(inode)->i_start = 0;
++		VXEXT_I(inode)->i_logstart = 0;
++		mark_inode_dirty(inode);
++	}
++
++	vxlock_fat(sb);
++	do
++	{
++		nr = vxext_access(sb, nr, FAT_ENT_FREE);
++		if(nr < 0)
++		{
++			goto error;
++		}
++		else if(nr == FAT_ENT_FREE)
++		{
++			vxext_fs_panic(sb, "%s: deleting beyond EOF (i_pos %lld)",
++				     __FUNCTION__, VXEXT_I(inode)->i_pos);
++			nr = -EIO;
++			goto error;
++		}
++
++		if(VXEXT_SB(sb)->free_clusters != -1)
++			VXEXT_SB(sb)->free_clusters++;
++		inode->i_blocks -= VXEXT_SB(sb)->cluster_size >> 9;
++	}
++	while (nr != FAT_ENT_EOF);
++
++	nr = 0;
++error:
++	vxunlock_fat(sb);
++
++	return nr;
++}
+diff -urNBb linux-2.6.23-org/fs/vxext/dir.c linux-2.6.23/fs/vxext/dir.c
+--- linux-2.6.23-org/fs/vxext/dir.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/dir.c	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,327 @@
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: dir.c 14 2007-04-30 13:56:08Z langner $
++
++***************************************************************************/
++
++#include <linux/slab.h>
++#include <linux/time.h>
++#include <linux/dirent.h>
++#include <linux/smp_lock.h>
++#include <linux/buffer_head.h>
++
++#include <asm/uaccess.h>
++
++#include "vxext_fs.h"
++
++struct file_operations vxext_dir_operations = 
++{
++	.read			= generic_read_dir,
++	.readdir	= vxext_readdir,
++	.fsync		= file_fsync,
++};
++
++int vxext_readdir(struct file *filp, void *dirent, filldir_t filldir)
++{
++	struct inode *inode = filp->f_dentry->d_inode;
++	struct super_block *sb = inode->i_sb;
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;	
++	unsigned char bufname[40];
++	unsigned long lpos, dummy, *furrfu = &lpos;
++	unsigned long inum;
++	int i;
++	loff_t i_pos, cpos;
++	int ret = 0;
++	
++	lock_kernel();
++
++	cpos = filp->f_pos;
++
++	// Fake . and .. for the root directory.
++	if(inode->i_ino == VXEXT_ROOT_INO)
++	{
++		while(cpos < 2)
++		{
++			if(filldir(dirent, "..", cpos+1, cpos, VXEXT_ROOT_INO, DT_DIR) < 0)
++				goto out;
++
++			cpos++;
++			filp->f_pos++;
++		}
++
++		if(cpos == 2)
++		{
++			dummy = 2;
++			furrfu = &dummy;
++			cpos = 0;
++		}
++	}
++
++	if(cpos & (sizeof(struct vxext_dir_entry)-1))
++	{
++		ret = -ENOENT;
++		goto out;
++	}
++
++ 	bh = NULL;
++
++GetNew:
++	if(vxext_get_entry(inode,&cpos,&bh,&de,&i_pos) == -1)
++		goto EODir;
++
++	if((de->attr & ATTR_VOLUME) || IS_FREE(de->name))
++		goto RecEnd;
++
++	#ifdef DEBUG
++	printk(KERN_INFO "DirEntry:\n");
++	printk(KERN_INFO "Name.........: [%s]\n",de->name);
++	printk(KERN_INFO "Attributes...: %x\n",  de->attr);
++	printk(KERN_INFO "Time.........: %x\n",  CT_LE_W(de->time));
++	printk(KERN_INFO "Date.........: %x\n",  CT_LE_W(de->date));
++	printk(KERN_INFO "StartCluster.: %d\n",  CT_LE_W(de->start));
++	printk(KERN_INFO "FileSize.....: %ld\n", CT_LE_L(de->size));
++	#endif
++
++	memcpy(bufname, de->name, sizeof(de->name));
++
++	lpos = cpos - 1*sizeof(struct vxext_dir_entry);
++
++	if(!memcmp(de->name, VXEXT_DOT, VXEXT_NAMELEN))
++	{
++		inum = inode->i_ino;
++	}
++	else if(!memcmp(de->name, VXEXT_DOTDOT, VXEXT_NAMELEN))
++	{
++		inum = parent_ino(filp->f_dentry);
++	}
++	else
++	{
++		struct inode *tmp = vxext_iget(sb, i_pos);
++
++		if(tmp) 
++		{
++			inum = tmp->i_ino;
++			iput(tmp);
++		} 
++		else
++			inum = iunique(sb, VXEXT_ROOT_INO);
++	}
++
++	// find the end of the name
++	for(i=0; bufname[i] && bufname[i] != ' ' ; i++);
++	
++	// make sure the end is properly terminated with a NUL
++	bufname[i] = '\0';
++
++	// now lets fill the directory tree
++	if (filldir(dirent, bufname, i, *furrfu, inum,
++	    (de->attr & ATTR_DIR) ? DT_DIR : DT_REG) < 0)
++	{
++		goto FillFailed;
++	}
++
++RecEnd:
++	furrfu = &lpos;
++	filp->f_pos = cpos;
++	goto GetNew;
++	
++EODir:
++	filp->f_pos = cpos;
++
++FillFailed:
++	if(bh)
++		brelse(bh);
++
++out:
++	unlock_kernel();
++	return ret;
++}
++
++/* This assumes that size of cluster is above the 32*slots */
++int vxext_add_entries(struct inode *dir, int slots, struct buffer_head **bh,
++											struct vxext_dir_entry **de, loff_t *i_pos)
++{
++	loff_t offset = 0;
++	loff_t curr = 0;
++	int row = 0;
++	struct buffer_head *new_bh;
++
++	*bh = NULL;
++
++	while(vxext_get_entry(dir, &curr, bh, de, i_pos) > -1)
++	{
++		// check the maximum size of directory */
++		if(curr >= FAT_MAX_DIR_SIZE)
++		{
++			brelse(*bh);
++			return -ENOSPC;
++		}
++
++		if(IS_FREE((*de)->name))
++		{
++			if(++row == slots)
++				return offset;
++		}
++		else
++		{
++			row = 0;
++			offset = curr;
++		}
++	}
++
++	if((dir->i_ino == VXEXT_ROOT_INO)) 
++		return -ENOSPC;
++		
++	new_bh = vxext_extend_dir(dir);
++	if (IS_ERR(new_bh))
++		return PTR_ERR(new_bh);
++
++	brelse(new_bh);
++
++	do
++	{
++		vxext_get_entry(dir, &curr, bh, de, i_pos);
++	}
++	while(++row < slots);
++
++	return offset;
++}
++
++int vxext_new_dir(struct inode *dir, struct inode *parent)
++{
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++	__u16 date, time;
++
++	bh = vxext_extend_dir(dir);
++	if (IS_ERR(bh))
++		return PTR_ERR(bh);
++
++	// zeroed out, so...
++	vxext_date_unix2dos(dir->i_mtime.tv_sec,&time,&date);
++	de = (struct vxext_dir_entry*)&bh->b_data[0];
++  memcpy(de[0].name, VXEXT_DOT, VXEXT_NAMELEN);
++  memcpy(de[1].name, VXEXT_DOTDOT, VXEXT_NAMELEN);
++	de[0].attr = de[1].attr = ATTR_DIR;
++	de[0].time = de[1].time = CT_LE_W(time);
++	de[0].date = de[1].date = CT_LE_W(date);
++	de[0].start = CT_LE_W(VXEXT_I(dir)->i_logstart);
++	de[1].start = CT_LE_W(VXEXT_I(parent)->i_logstart);
++	mark_buffer_dirty(bh);
++	brelse(bh);
++	dir->i_atime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
++	mark_inode_dirty(dir);
++
++	return 0;
++}
++
++static int vxext_get_short_entry(struct inode *dir, loff_t *pos,
++													       struct buffer_head **bh,
++																 struct vxext_dir_entry **de,
++																 loff_t *i_pos)
++{
++	while (vxext_get_entry(dir, pos, bh, de, i_pos) >= 0)
++	{
++		// free entry or long name entry or volume label
++		if (!IS_FREE((*de)->name) && !((*de)->attr & ATTR_VOLUME))
++			return 0;
++	}
++	
++	return -ENOENT;
++}
++
++/* See if directory is empty */
++int vxext_dir_empty(struct inode *dir)
++{
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++	loff_t cpos, i_pos;
++	int result = 0;
++
++	bh = NULL;
++	cpos = 0;
++
++	while(vxext_get_short_entry(dir, &cpos, &bh, &de, &i_pos) >= 0)
++	{
++	  if(strncmp(de->name, VXEXT_DOT, VXEXT_NAMELEN) &&
++			 strncmp(de->name, VXEXT_DOTDOT, VXEXT_NAMELEN))
++		{
++			result = -ENOTEMPTY;
++      break;
++    }
++	}
++
++	brelse(bh);
++	return result;
++}
++
++/*
++ * vxext_subdirs counts the number of sub-directories of dir. It can be run
++ * on directories being created.
++ */
++int vxext_subdirs(struct inode *dir)
++{
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++	loff_t cpos, i_pos;
++	int count = 0;
++
++	bh = NULL;
++	cpos = 0;
++	
++	while(vxext_get_short_entry(dir, &cpos, &bh, &de, &i_pos) >= 0)
++	{
++		if(de->attr & ATTR_DIR)
++			count++;
++	}
++	
++	brelse(bh);
++	return count;
++}
++
++/*
++ * Scans a directory for a given file (name points to its formatted name).
++ * Returns an error code or zero.
++ */
++int vxext_scan(struct inode *dir, const unsigned char *name,
++							 struct buffer_head **bh, struct vxext_dir_entry **de,
++							 loff_t *i_pos)
++{
++	loff_t cpos;
++
++	*bh = NULL;
++	cpos = 0;
++
++	while(vxext_get_short_entry(dir, &cpos, bh, de, i_pos) >= 0)
++	{
++		if(!strncmp((*de)->name, name, VXEXT_NAMELEN))
++			return 0;
++	}
++	
++	return -ENOENT;
++}
+diff -urNBb linux-2.6.23-org/fs/vxext/file.c linux-2.6.23/fs/vxext/file.c
+--- linux-2.6.23-org/fs/vxext/file.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/file.c	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,137 @@
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: file.c 29 2007-10-10 17:11:00Z langner $
++
++***************************************************************************/
++
++#include <linux/time.h>
++#include <linux/smp_lock.h>
++#include <linux/buffer_head.h>
++#include <linux/version.h>
++
++#include "vxext_fs.h"
++
++struct file_operations vxext_file_operations =
++{
++	.llseek		 = generic_file_llseek,
++	.read		 = do_sync_read,
++	.write		 = do_sync_write,
++  	.aio_read  	 = generic_file_aio_read,
++  	.aio_write 	 = generic_file_aio_write,
++	.mmap		 = generic_file_mmap,
++	.fsync		 = file_fsync,
++	.splice_read 	 = generic_file_splice_read, 
++};
++
++struct inode_operations vxext_file_inode_operations =
++{
++	.truncate	= vxext_truncate,
++	.setattr	= vxext_notify_change,
++};
++
++int vxext_get_block(struct inode *inode, sector_t iblock,
++										struct buffer_head *bh_result, int create)
++{
++	struct super_block *sb = inode->i_sb;
++	sector_t phys;
++	int err;
++
++	err = vxext_bmap(inode, iblock, &phys);
++	if(err)
++		return err;
++
++	if(phys)
++	{
++		map_bh(bh_result, sb, phys);
++		return 0;
++	}
++
++	if(!create)
++		return 0;
++
++	if(iblock != VXEXT_I(inode)->mmu_private >> sb->s_blocksize_bits)
++	{
++		vxext_fs_panic(sb, "corrupted file size (i_pos %lld, %lld)",
++			     VXEXT_I(inode)->i_pos, VXEXT_I(inode)->mmu_private);
++
++		return -EIO;
++	}
++
++	if(!((unsigned long)iblock & (VXEXT_SB(sb)->sec_per_clus - 1)))
++	{
++		int error;
++
++		error = vxext_add_cluster(inode);
++		if (error < 0)
++			return error;
++	}
++
++	VXEXT_I(inode)->mmu_private += sb->s_blocksize;
++	err = vxext_bmap(inode, iblock, &phys);
++	if (err)
++		return err;
++		
++	if(!phys)
++		BUG();
++
++	set_buffer_new(bh_result);
++	map_bh(bh_result, sb, phys);
++	return 0;
++}
++
++void vxext_truncate(struct inode *inode)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
++	const unsigned int cluster_size = sbi->cluster_size;
++	int nr_clusters;
++
++	// Why no return value?  Surely the disk could fail...
++	if(IS_RDONLY (inode))
++		return; // -EPERM
++
++	if(IS_IMMUTABLE(inode))
++		return; // -EPERM
++
++	// This protects against truncating a file bigger than it was then
++	// trying to write into the hole.
++	if(VXEXT_I(inode)->mmu_private > inode->i_size)
++		VXEXT_I(inode)->mmu_private = inode->i_size;
++
++	nr_clusters = ((unsigned long)(inode->i_size + (cluster_size - 1))) / sbi->cluster_size;
++
++	// again we have to round up the number of clusters because VXEXT isn't bound
++	// to cluster sizes based on power 2.
++	if(((unsigned long)(inode->i_size + (cluster_size - 1))) % sbi->cluster_size)
++		nr_clusters++;
++	
++	lock_kernel();
++	vxext_free(inode, nr_clusters);
++	VXEXT_I(inode)->i_attrs |= ATTR_ARCH;
++	unlock_kernel();
++	inode->i_ctime = inode->i_mtime = CURRENT_TIME;
++	mark_inode_dirty(inode);
++}
+diff -urNBb linux-2.6.23-org/fs/vxext/inode.c linux-2.6.23/fs/vxext/inode.c
+--- linux-2.6.23-org/fs/vxext/inode.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/inode.c	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,1212 @@
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: inode.c 27 2007-10-10 15:46:36Z langner $
++
++***************************************************************************/
++
++#include <linux/module.h>
++#include <linux/time.h>
++#include <linux/slab.h>
++#include <linux/smp_lock.h>
++#include <linux/seq_file.h>
++#include <linux/pagemap.h>
++#include <linux/buffer_head.h>
++#include <linux/mount.h>
++#include <linux/vfs.h>
++#include <linux/parser.h>
++#include <linux/exportfs.h>
++#include <asm/unaligned.h>
++
++#include "vxext_fs.h"
++
++/*
++ * New FAT inode stuff. We do the following:
++ *	a) i_ino is constant and has nothing with on-disk location.
++ *	b) FAT manages its own cache of directory entries.
++ *	c) *This* cache is indexed by on-disk location.
++ *	d) inode has an associated directory entry, all right, but
++ *		it may be unhashed.
++ *	e) currently entries are stored within struct inode. That should
++ *		change.
++ *	f) we deal with races in the following way:
++ *		1. readdir() and lookup() do FAT-dir-cache lookup.
++ *		2. rename() unhashes the F-d-c entry and rehashes it in
++ *			a new place.
++ *		3. unlink() and rmdir() unhash F-d-c entry.
++ *		4. vxext_write_inode() checks whether the thing is unhashed.
++ *			If it is we silently return. If it isn't we do bread(),
++ *			check if the location is still valid and retry if it
++ *			isn't. Otherwise we do changes.
++ *		5. Spinlock is used to protect hash/unhash/location check/lookup
++ *		6. vxext_clear_inode() unhashes the F-d-c entry.
++ *		7. lookup() and readdir() do igrab() if they find a F-d-c entry
++ *			and consider negative result as cache miss.
++ */
++
++#define FAT_HASH_BITS	8
++#define FAT_HASH_SIZE	(1UL << FAT_HASH_BITS)
++#define FAT_HASH_MASK	(FAT_HASH_SIZE-1)
++static struct list_head vxext_inode_hashtable[FAT_HASH_SIZE];
++spinlock_t vxext_inode_lock = SPIN_LOCK_UNLOCKED;
++
++void vxext_hash_init(void)
++{
++	int i;
++
++	for(i = 0; i < FAT_HASH_SIZE; i++)
++	{
++		INIT_LIST_HEAD(&vxext_inode_hashtable[i]);
++	}
++}
++
++static inline unsigned long vxext_hash(struct super_block *sb, loff_t i_pos)
++{
++	unsigned long tmp = (unsigned long)i_pos | (unsigned long) sb;
++	tmp = tmp + (tmp >> FAT_HASH_BITS) + (tmp >> FAT_HASH_BITS * 2);
++	return tmp & FAT_HASH_MASK;
++}
++
++void vxext_attach(struct inode *inode, loff_t i_pos)
++{
++	spin_lock(&vxext_inode_lock);
++	VXEXT_I(inode)->i_pos = i_pos;
++	list_add(&VXEXT_I(inode)->i_fat_hash,
++		vxext_inode_hashtable + vxext_hash(inode->i_sb, i_pos));
++	spin_unlock(&vxext_inode_lock);
++}
++
++void vxext_detach(struct inode *inode)
++{
++	spin_lock(&vxext_inode_lock);
++	VXEXT_I(inode)->i_pos = 0;
++	list_del_init(&VXEXT_I(inode)->i_fat_hash);
++	spin_unlock(&vxext_inode_lock);
++}
++
++struct inode *vxext_iget(struct super_block *sb, loff_t i_pos)
++{
++	struct list_head *p;
++	struct list_head *walk = NULL;
++	struct vxext_inode_info *i;
++	struct inode *inode = NULL;
++
++	p = vxext_inode_hashtable + vxext_hash(sb, i_pos);
++
++	spin_lock(&vxext_inode_lock);
++
++	list_for_each(walk, p)
++	{
++		i = list_entry(walk, struct vxext_inode_info, i_fat_hash);
++
++		if(i->vfs_inode.i_sb != sb || i->i_pos != i_pos)
++			continue;
++
++		inode = igrab(&i->vfs_inode);
++		if(inode)
++			break;
++	}
++
++	spin_unlock(&vxext_inode_lock);
++	return inode;
++}
++
++static int vxext_fill_inode(struct inode *inode, struct vxext_dir_entry *de);
++
++struct inode *vxext_build_inode(struct super_block *sb,
++																struct vxext_dir_entry *de,
++																loff_t i_pos, int *res)
++{
++	struct inode *inode;
++	*res = 0;
++	inode = vxext_iget(sb, i_pos);
++	if(inode)
++		goto out;
++
++	inode = new_inode(sb);
++	*res = -ENOMEM;
++	if(!inode)
++		goto out;
++
++	inode->i_ino = iunique(sb, VXEXT_ROOT_INO);
++	inode->i_version = 1;
++	*res = vxext_fill_inode(inode, de);
++	if(*res < 0)
++	{
++		iput(inode);
++		inode = NULL;
++		goto out;
++	}
++
++	vxext_attach(inode, i_pos);
++	insert_inode_hash(inode);
++
++out:
++	return inode;
++}
++
++void vxext_delete_inode(struct inode *inode)
++{
++	if(!is_bad_inode(inode))
++	{
++		inode->i_size = 0;
++		vxext_truncate(inode);
++	}
++
++	clear_inode(inode);
++}
++
++void vxext_clear_inode(struct inode *inode)
++{
++	if(is_bad_inode(inode))
++		return;
++
++	lock_kernel();
++	spin_lock(&vxext_inode_lock);
++	vxext_cache_inval_inode(inode);
++	list_del_init(&VXEXT_I(inode)->i_fat_hash);
++	spin_unlock(&vxext_inode_lock);
++	unlock_kernel();
++}
++
++void vxext_put_super(struct super_block *sb)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	sb->s_fs_info = NULL;
++	kfree(sbi);
++}
++
++static int vxext_show_options(struct seq_file *m, struct vfsmount *mnt)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(mnt->mnt_sb);
++	struct vxext_mount_options *opts = &sbi->options;
++
++	if(opts->fs_uid != 0)
++		seq_printf(m, ",uid=%u", opts->fs_uid);
++
++	if(opts->fs_gid != 0)
++		seq_printf(m, ",gid=%u", opts->fs_gid);
++
++	seq_printf(m, ",fmask=%04o", opts->fs_fmask);
++	seq_printf(m, ",dmask=%04o", opts->fs_dmask);
++
++	if(opts->quiet)
++		seq_puts(m, ",quiet");
++
++	return 0;
++}
++
++enum
++{
++	Opt_uid, Opt_gid, Opt_umask, Opt_dmask, Opt_fmask, Opt_quiet, Opt_debug,
++	Opt_uni_xl_no, Opt_uni_xl_yes,
++	Opt_err,
++};
++
++static match_table_t vxext_tokens =
++{
++	{Opt_uid, "uid=%u"},
++	{Opt_gid, "gid=%u"},
++	{Opt_umask, "umask=%o"},
++	{Opt_dmask, "dmask=%o"},
++	{Opt_fmask, "fmask=%o"},
++	{Opt_quiet, "quiet"},
++	{Opt_debug, "debug"},
++	{Opt_err, NULL}
++};
++
++static int parse_options(char *options, int *debug,
++												 struct vxext_mount_options *opts)
++{
++	char *p;
++	substring_t args[MAX_OPT_ARGS];
++	int option;
++
++	opts->fs_uid = current->uid;
++	opts->fs_gid = current->gid;
++	opts->fs_fmask = opts->fs_dmask = current->fs->umask;
++	opts->quiet = 0;
++	*debug = 0;
++
++	if(!options)
++		return 1;
++
++	while((p = strsep(&options, ",")) != NULL)
++	{
++		int token;
++
++		if(!*p)
++			continue;
++
++		token = match_token(p, vxext_tokens, args);
++		switch(token)
++		{
++			case Opt_quiet:
++				opts->quiet = 1;
++			break;
++		
++			case Opt_debug:
++				*debug = 1;
++			break;
++		
++			case Opt_uid:
++				if(match_int(&args[0], &option))
++					return 0;
++				opts->fs_uid = option;
++			break;
++		
++			case Opt_gid:
++				if(match_int(&args[0], &option))
++					return 0;
++				opts->fs_gid = option;
++			break;
++		
++			case Opt_umask:
++				if(match_octal(&args[0], &option))
++					return 0;
++				opts->fs_fmask = opts->fs_dmask = option;
++			break;
++		
++			case Opt_dmask:
++				if(match_octal(&args[0], &option))
++					return 0;
++				opts->fs_dmask = option;
++			break;
++		
++			case Opt_fmask:
++				if(match_octal(&args[0], &option))
++					return 0;
++				opts->fs_fmask = option;
++			break;
++
++			// unknown option
++			default:
++				printk(KERN_ERR "VXEXT: Unrecognized mount option \"%s\" "
++												"or missing value\n", p);
++				return 0;
++		}
++	}
++
++	return 1;
++}
++
++static int vxext_calc_dir_size(struct inode *inode)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
++	int ret, fclus, dclus;
++
++	inode->i_size = 0;
++	if(VXEXT_I(inode)->i_start == 0)
++		return 0;
++
++	ret = vxext_get_cluster(inode, FAT_ENT_EOF, &fclus, &dclus);
++	if(ret < 0)
++		return ret;
++
++	inode->i_size = (fclus + 1) * sbi->cluster_size;
++
++	return 0;
++}
++
++static int vxext_read_root(struct inode *inode)
++{
++	struct super_block *sb = inode->i_sb;
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++
++	VXEXT_I(inode)->file_cluster = VXEXT_I(inode)->disk_cluster = 0;
++	VXEXT_I(inode)->i_pos = 0;
++	inode->i_uid = sbi->options.fs_uid;
++	inode->i_gid = sbi->options.fs_gid;
++	inode->i_version++;
++	inode->i_generation = 0;
++	inode->i_mode = (S_IRWXUGO & ~sbi->options.fs_dmask) | S_IFDIR;
++	inode->i_op = sbi->dir_ops;
++	inode->i_fop = &vxext_dir_operations;
++	VXEXT_I(inode)->i_start = 0;
++	inode->i_size = sbi->dir_entries * sizeof(struct vxext_dir_entry);
++	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
++			   & ~((loff_t)sbi->cluster_size - 1)) >> 9;
++	VXEXT_I(inode)->i_logstart = 0;
++	VXEXT_I(inode)->mmu_private = inode->i_size;
++
++	VXEXT_I(inode)->i_attrs = 0;
++	inode->i_mtime.tv_sec = inode->i_atime.tv_sec = inode->i_ctime.tv_sec = 0;
++	inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec = inode->i_ctime.tv_nsec = 0;
++	inode->i_nlink = vxext_subdirs(inode)+2;
++
++	return 0;
++}
++
++/*
++ * a FAT file handle with fhtype 3 is
++ *  0/  i_ino - for fast, reliable lookup if still in the cache
++ *  1/  i_generation - to see if i_ino is still valid
++ *          bit 0 == 0 iff directory
++ *  2/  i_pos(8-39) - if ino has changed, but still in cache
++ *  3/  i_pos(4-7)|i_logstart - to semi-verify inode found at i_pos
++ *  4/  i_pos(0-3)|parent->i_logstart - maybe used to hunt for the file on disc
++ *
++ * Hack for NFSv2: Maximum FAT entry number is 28bits and maximum
++ * i_pos is 40bits (blocknr(32) + dir offset(8)), so two 4bits
++ * of i_logstart is used to store the directory entry offset.
++ */
++
++struct dentry *vxext_decode_fh(struct super_block *sb, __u32 *fh,
++															 int len, int fhtype, 
++															 int (*acceptable)(void *context, struct dentry *de),
++															 void *context)
++{
++
++	if(fhtype != 3)
++		return ERR_PTR(-ESTALE);
++
++	if(len < 5)
++		return ERR_PTR(-ESTALE);
++
++	return sb->s_export_op->find_exported_dentry(sb, fh, NULL, acceptable, context);
++}
++
++struct dentry *vxext_get_dentry(struct super_block *sb, void *inump)
++{
++	struct inode *inode = NULL;
++	struct dentry *result;
++	__u32 *fh = inump;
++
++	inode = iget(sb, fh[0]);
++	if(!inode || is_bad_inode(inode) || inode->i_generation != fh[1])
++	{
++		if(inode)
++			iput(inode);
++
++		inode = NULL;
++	}
++
++	if(!inode)
++	{
++		loff_t i_pos;
++		int i_logstart = fh[3] & 0x0fffffff;
++
++		i_pos = (loff_t)fh[2] << 8;
++		i_pos |= ((fh[3] >> 24) & 0xf0) | (fh[4] >> 28);
++
++		/* try 2 - see if i_pos is in F-d-c
++		 * require i_logstart to be the same
++		 * Will fail if you truncate and then re-write
++		 */
++
++		inode = vxext_iget(sb, i_pos);
++		if(inode && VXEXT_I(inode)->i_logstart != i_logstart)
++		{
++			iput(inode);
++			inode = NULL;
++		}
++	}
++	
++	if(!inode)
++	{
++		/* For now, do nothing
++		 * What we could do is:
++		 * follow the file starting at fh[4], and record
++		 * the ".." entry, and the name of the fh[2] entry.
++		 * The follow the ".." file finding the next step up.
++		 * This way we build a path to the root of
++		 * the tree. If this works, we lookup the path and so
++		 * get this inode into the cache.
++		 * Finally try the vxext_iget lookup again
++		 * If that fails, then weare totally out of luck
++		 * But all that is for another day
++		 */
++	}
++	
++	if(!inode)
++		return ERR_PTR(-ESTALE);
++
++	
++	/* now to find a dentry.
++	 * If possible, get a well-connected one
++	 */
++	result = d_alloc_anon(inode);
++	if(result == NULL)
++	{
++		iput(inode);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	result->d_op = sb->s_root->d_op;
++	return result;
++}
++
++int vxext_encode_fh(struct dentry *de, __u32 *fh, int *lenp, int connectable)
++{
++	int len = *lenp;
++	struct inode *inode =  de->d_inode;
++	u32 ipos_h, ipos_m, ipos_l;
++	
++	if(len < 5)
++		return 255; /* no room */
++
++	ipos_h = VXEXT_I(inode)->i_pos >> 8;
++	ipos_m = (VXEXT_I(inode)->i_pos & 0xf0) << 24;
++	ipos_l = (VXEXT_I(inode)->i_pos & 0x0f) << 28;
++	*lenp = 5;
++	fh[0] = inode->i_ino;
++	fh[1] = inode->i_generation;
++	fh[2] = ipos_h;
++	fh[3] = ipos_m | VXEXT_I(inode)->i_logstart;
++	spin_lock(&de->d_lock);
++	fh[4] = ipos_l | VXEXT_I(de->d_parent->d_inode)->i_logstart;
++	spin_unlock(&de->d_lock);
++	
++	return 3;
++}
++
++struct dentry *vxext_get_parent(struct dentry *child)
++{
++	struct buffer_head *bh=NULL;
++	struct vxext_dir_entry *de = NULL;
++	struct dentry *parent = NULL;
++	int res;
++	loff_t i_pos = 0;
++	struct inode *inode;
++
++	lock_kernel();
++	res = vxext_scan(child->d_inode, VXEXT_DOTDOT, &bh, &de, &i_pos);
++	res = -1;
++
++	if(res < 0)
++		goto out;
++
++	inode = vxext_build_inode(child->d_sb, de, i_pos, &res);
++	if(res)
++		goto out;
++
++	if(!inode)
++	{
++		res = -EACCES;
++	}
++	else
++	{
++		parent = d_alloc_anon(inode);
++		if(!parent)
++		{
++			iput(inode);
++			res = -ENOMEM;
++		}
++	}
++
++ out:
++	if(bh)
++		brelse(bh);
++
++	unlock_kernel();
++	if(res)
++		return ERR_PTR(res);
++	else
++		return parent;
++}
++
++static struct kmem_cache *vxext_inode_cachep;
++
++static struct inode *vxext_alloc_inode(struct super_block *sb)
++{
++	struct vxext_inode_info *ei;
++	ei = (struct vxext_inode_info *)kmem_cache_alloc(vxext_inode_cachep, GFP_KERNEL);
++	if(!ei)
++		return NULL;
++
++	return &ei->vfs_inode;
++}
++
++static void vxext_destroy_inode(struct inode *inode)
++{
++	kmem_cache_free(vxext_inode_cachep, VXEXT_I(inode));
++}
++
++static void init_once(void * foo, struct kmem_cache * cachep, unsigned long flags)
++{
++	struct vxext_inode_info *ei = (struct vxext_inode_info *) foo;
++
++	INIT_LIST_HEAD(&ei->i_fat_hash);
++	inode_init_once(&ei->vfs_inode);
++}
++ 
++int __init vxext_init_inodecache(void)
++{
++	vxext_inode_cachep = kmem_cache_create("vxext_inode_cache",
++					     sizeof(struct vxext_inode_info),
++                                             0, (SLAB_RECLAIM_ACCOUNT|
++                                                SLAB_MEM_SPREAD),
++                                             init_once);
++
++	if(vxext_inode_cachep == NULL)
++		return -ENOMEM;
++
++	return 0;
++}
++
++void __exit vxext_destroy_inodecache(void)
++{
++	kmem_cache_destroy(vxext_inode_cachep);
++}
++
++static int vxext_remount(struct super_block *sb, int *flags, char *data)
++{
++	*flags |= MS_NODIRATIME;
++	return 0;
++}
++
++static struct super_operations vxext_sops =
++{ 
++	.alloc_inode		= vxext_alloc_inode,
++	.destroy_inode	= vxext_destroy_inode,
++	.write_inode		= vxext_write_inode,
++	.delete_inode		= vxext_delete_inode,
++	.put_super			= vxext_put_super,
++	.statfs					= vxext_statfs,
++	.clear_inode		= vxext_clear_inode,
++	.remount_fs			= vxext_remount,
++	.read_inode			= make_bad_inode,
++	.show_options		= vxext_show_options,
++};
++
++static struct export_operations vxext_export_ops =
++{
++	.decode_fh	= vxext_decode_fh,
++	.encode_fh	= vxext_encode_fh,
++	.get_dentry	= vxext_get_dentry,
++	.get_parent	= vxext_get_parent,
++};
++
++/*
++ * Read the super block of an VxWorks extended DOS filesystem disk.
++ */
++int vxext_fill_super(struct super_block *sb, void *data, int silent,
++										 struct inode_operations *fs_dir_inode_ops)
++{
++	struct inode *root_inode = NULL;
++	struct buffer_head *bh;
++	struct vxext_boot_sector *b;
++	struct vxext_sb_info *sbi;
++	u16 logical_sector_size;
++	u32 total_sectors, total_clusters, vxext_clusters, rootdir_sectors;
++	int debug, first;
++	unsigned int media;
++	long error;
++
++	sbi = kmalloc(sizeof(struct vxext_sb_info), GFP_KERNEL);
++	if(!sbi)
++		return -ENOMEM;
++
++	sb->s_fs_info = sbi;
++	memset(sbi, 0, sizeof(struct vxext_sb_info));
++
++	sb->s_flags |= MS_NODIRATIME;
++	sb->s_magic = VXEXT_SUPER_MAGIC;
++	sb->s_op = &vxext_sops;
++	sb->s_export_op = &vxext_export_ops;
++	sbi->dir_ops = fs_dir_inode_ops;
++
++	error = -EINVAL;
++	if (!parse_options(data, &debug, &sbi->options))
++		goto out_fail;
++
++	vxext_cache_init(sb);
++	// set up enough so that it can read an inode
++	init_MUTEX(&sbi->fat_lock);
++
++	error = -EIO;
++	sb_min_blocksize(sb, 512);
++	bh = sb_bread(sb, 0);
++	if (bh == NULL)
++	{
++		printk(KERN_ERR "VXEXT: unable to read boot sector\n");
++		goto out_fail;
++	}
++
++	b = (struct vxext_boot_sector *) bh->b_data;
++
++	#ifdef DEBUG
++	printk(KERN_INFO "read bootsector:\n");
++	printk(KERN_INFO "---------------\n");
++	printk(KERN_INFO "system_id.........: %s\n",		b->system_id);
++	printk(KERN_INFO "sector_size.......: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->sector_size)));
++	printk(KERN_INFO "sec_per_clus......: %ld\n", 	b->sec_per_clus);
++	printk(KERN_INFO "reserved sectors..: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->reserved)));
++	printk(KERN_INFO "# of FATs.........: %ld\n",		b->fats);
++	printk(KERN_INFO "max # of root dirs: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->dir_entries)));
++	printk(KERN_INFO "# of sectors......: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->sectors)));
++	printk(KERN_INFO "media type........: 0x%lx\n",	b->media);
++	printk(KERN_INFO "# of sectors/FAT..: %d\n",		CF_LE_W(get_unaligned((u16 *)&b->fat_length)));
++	printk(KERN_INFO "# of sectors/track: %d\n",		CF_LE_W(get_unaligned((u16 *)&b->secs_track)));
++	printk(KERN_INFO "# of heads........: %d\n",		CF_LE_W(get_unaligned((u16 *)&b->heads)));
++	printk(KERN_INFO "# of hidden sect..: %d\n",		CF_LE_L(b->hidden));
++	printk(KERN_INFO "long total sectors: %ld\n",		CF_LE_L(b->total_sect));
++	#endif
++
++	// use the supermagic string for identifying the VxWorks extended DOS
++	// filesystem
++	if(strcmp(b->system_id, VXEXT_SUPER_MAGIC_STRING) != 0)
++	{
++		brelse(bh);
++		goto out_fail;
++	}
++
++	if(b->reserved == 0)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus number of reserved sectors\n");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	if(b->fats == 0)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus number of FAT structure\n");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	if(b->secs_track == 0) 
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus sectors-per-track value\n");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	if(b->heads == 0)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus number-of-heads value\n");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++	
++	media = b->media;
++	if(!VXEXT_VALID_MEDIA(media))
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: invalid media value (0x%02x)\n",
++			       media);
++
++		brelse(bh);
++		goto out_invalid;
++	}
++	
++	logical_sector_size = CF_LE_W(get_unaligned((u16 *)&b->sector_size));
++	if(logical_sector_size == 0
++	    || (logical_sector_size & (logical_sector_size - 1))
++	    || (logical_sector_size < 512)
++	    || (PAGE_CACHE_SIZE < logical_sector_size))
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus logical sector size %u\n",
++			       logical_sector_size);
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	total_sectors = CF_LE_W(get_unaligned((u16 *)&b->sectors));
++	if(total_sectors == 0)
++		total_sectors = CF_LE_L(b->total_sect);
++
++	if(total_sectors == 0)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus total_sectors\n");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	// on VXEXT 1.0 filesystem the sectors_per_cluster field is set to
++	// zero to signal that the sectors per cluster are simply
++	// max_sectors / 65535
++	if(b->sec_per_clus != 0)
++	{
++		if (!silent)
++			printk(KERN_ERR "VXEXT: sec_per_cluster != 0");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++  // calculate the sectors per cluster dynamically out of the total
++  // sectors the partition has. This somehow breask the FAT16 DOS
++  // specification but is exactly what Wind River does for filling
++  // up the whole disk with having more than 2GB data on the disk.
++  // Please note that if there is any remainder out of the division,
++  // then the sectors per cluster size is increased by one, rounding
++  // up to a "safe" cluster size.
++  sbi->sec_per_clus = total_sectors / FAT_MAX_DIR_ENTRIES;
++  if(sbi->sec_per_clus % FAT_MAX_DIR_ENTRIES)
++    sbi->sec_per_clus++;
++
++	if(sbi->sec_per_clus == 0)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus sectors per cluster %u\n",
++			       sbi->sec_per_clus);
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	if(logical_sector_size < sb->s_blocksize)
++	{
++		printk(KERN_ERR "VXEXT: logical sector size too small for device"
++		       " (logical sector size = %u)\n", logical_sector_size);
++
++		brelse(bh);
++		goto out_fail;
++	}
++
++	if(logical_sector_size > sb->s_blocksize)
++	{
++		brelse(bh);
++
++		if(!sb_set_blocksize(sb, logical_sector_size))
++		{
++			printk(KERN_ERR "VXEXT: unable to set blocksize %u\n",
++			       logical_sector_size);
++
++			goto out_fail;
++		}
++
++		bh = sb_bread(sb, 0);
++
++		if (bh == NULL)
++		{
++			printk(KERN_ERR "VXEXT: unable to read boot sector"
++			       " (logical sector size = %lu)\n",
++			       sb->s_blocksize);
++
++			goto out_fail;
++		}
++
++		b = (struct vxext_boot_sector *) bh->b_data;
++	}
++
++	// calculate the cluster size required for accomodating
++	// a cluster
++	sbi->cluster_size = sb->s_blocksize * sbi->sec_per_clus;
++
++	sbi->fats = b->fats;
++	sbi->fat_start = CF_LE_W(b->reserved);
++	sbi->fat_length = CF_LE_W(b->fat_length);
++	sbi->root_cluster = 0;
++	sbi->free_clusters = -1;	// Don't know it yet
++	sbi->prev_free = -1;
++
++	if(sbi->fat_length == 0)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus FAT length\n");
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	sbi->dir_per_block = sb->s_blocksize / sizeof(struct vxext_dir_entry);
++	sbi->dir_per_block_bits = ffs(sbi->dir_per_block) - 1;
++
++	sbi->dir_start = sbi->fat_start + sbi->fats * sbi->fat_length;
++	sbi->dir_entries = CF_LE_W(get_unaligned((u16 *)&b->dir_entries));
++
++	if(sbi->dir_entries & (sbi->dir_per_block - 1))
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: bogus directroy-entries per block"
++			       " (%u)\n", sbi->dir_entries);
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	rootdir_sectors = sbi->dir_entries
++		* sizeof(struct vxext_dir_entry) / sb->s_blocksize;
++	sbi->data_start = sbi->dir_start + rootdir_sectors;
++
++	total_clusters = (total_sectors - sbi->data_start) / sbi->sec_per_clus;
++
++	// check that the FAT table does not overflow
++	vxext_clusters = sbi->fat_length * sb->s_blocksize * 8 / 16;
++	total_clusters = min(total_clusters, vxext_clusters - 2);
++	if(total_clusters > MAX_FAT_VXEXT)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: count of clusters too big (%u)\n",
++			       total_clusters);
++
++		brelse(bh);
++		goto out_invalid;
++	}
++
++	sbi->clusters = total_clusters;
++
++	brelse(bh);
++
++	// validity check of FAT
++	first = __vxext_access(sb, 0, -1);
++	if(first < 0)
++	{
++		error = first;
++		goto out_fail;
++	}
++
++	if(VXEXT_FIRST_ENT(sb, media) != first)
++	{
++		if(!silent)
++			printk(KERN_ERR "VXEXT: invalid first entry of FAT "
++			       "(0x%x != 0x%x)\n",
++			       VXEXT_FIRST_ENT(sb, media), first);
++				   
++		goto out_invalid;
++	}
++
++	error = -ENOMEM;
++	root_inode = new_inode(sb);
++	if(!root_inode)
++		goto out_fail;
++
++	root_inode->i_ino = VXEXT_ROOT_INO;
++	root_inode->i_version = 1;
++	error = vxext_read_root(root_inode);
++	if(error < 0)
++		goto out_fail;
++
++	error = -ENOMEM;
++	insert_inode_hash(root_inode);
++	sb->s_root = d_alloc_root(root_inode);
++	if(!sb->s_root)
++	{
++		printk(KERN_ERR "VXEXT: get root inode failed\n");
++		goto out_fail;
++	}
++
++	// all is as it should be */
++	printk(KERN_INFO "VFS: successfully mounted VXEXT1.0 filesystem"
++									 " from device %s.\n", sb->s_id);
++
++	return 0;
++
++out_invalid:
++	error = -EINVAL;
++	if (!silent)
++		printk(KERN_INFO "VFS: Can't find a valid VXEXT1.0 filesystem"
++		       " on dev %s.\n", sb->s_id);
++
++out_fail:
++	if (root_inode)
++		iput(root_inode);
++
++	sb->s_fs_info = NULL;
++	kfree(sbi);
++	return error;
++}
++
++int vxext_statfs(struct dentry *dentry, struct kstatfs *buf)
++{
++  struct vxext_sb_info *sbi = VXEXT_SB(dentry->d_sb);
++  struct super_block *sb = dentry->d_sb;
++	int free, nr, ret;
++       
++	if(sbi->free_clusters != -1)
++	{
++		free = sbi->free_clusters;
++	}
++	else
++	{
++		vxlock_fat(sb);
++		
++		if(sbi->free_clusters != -1)
++		{
++			free = sbi->free_clusters;
++		}
++		else
++		{
++			free = 0;
++			for(nr = 2; nr < sbi->clusters + 2; nr++)
++			{
++				ret = vxext_access(sb, nr, -1);
++				if(ret < 0)
++				{
++					vxunlock_fat(sb);
++					return ret;
++				}
++				else if(ret == FAT_ENT_FREE)
++				{
++					free++;
++				}
++			}
++
++			sbi->free_clusters = free;
++		}
++
++		vxunlock_fat(sb);
++	}
++
++	buf->f_type = sb->s_magic;
++	buf->f_bsize = sbi->cluster_size;
++	buf->f_blocks = sbi->clusters;
++	buf->f_bfree = free;
++	buf->f_bavail = free;
++	buf->f_namelen = VXEXT_NAMELEN; // VXEXT 1.0 support 40 chars filenames
++
++	return 0;
++}
++
++static int vxext_writepage(struct page *page, struct writeback_control *wbc)
++{
++	return block_write_full_page(page,vxext_get_block, wbc);
++}
++
++static int vxext_readpage(struct file *file, struct page *page)
++{
++	return block_read_full_page(page,vxext_get_block);
++}
++
++static int vxext_prepare_write(struct file *file, struct page *page,
++															 unsigned from, unsigned to)
++{
++	kmap(page);
++	return cont_prepare_write(page,from,to,vxext_get_block,
++		&VXEXT_I(page->mapping->host)->mmu_private);
++}
++
++static int vxext_commit_write(struct file *file, struct page *page,
++			unsigned from, unsigned to)
++{
++	kunmap(page);
++	return generic_commit_write(file, page, from, to);
++}
++
++static sector_t _vxext_bmap(struct address_space *mapping, sector_t block)
++{
++	return generic_block_bmap(mapping,block,vxext_get_block);
++}
++
++static struct address_space_operations vxext_aops =
++{
++	.readpage				= vxext_readpage,
++	.writepage			= vxext_writepage,
++	.sync_page			= block_sync_page,
++	.prepare_write	= vxext_prepare_write,
++	.commit_write		= vxext_commit_write,
++	.bmap						= _vxext_bmap
++};
++
++// doesn't deal with root inode
++static int vxext_fill_inode(struct inode *inode, struct vxext_dir_entry *de)
++{
++	struct super_block *sb = inode->i_sb;
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	int error;
++
++	VXEXT_I(inode)->file_cluster = VXEXT_I(inode)->disk_cluster = 0;
++	VXEXT_I(inode)->i_pos = 0;
++	inode->i_uid = sbi->options.fs_uid;
++	inode->i_gid = sbi->options.fs_gid;
++	inode->i_version++;
++	inode->i_generation = get_seconds();
++	
++	if((de->attr & ATTR_DIR) && !IS_FREE(de->name))
++	{
++		inode->i_generation &= ~1;
++		inode->i_mode = VXEXT_MKMODE(de->attr,
++			S_IRWXUGO & ~sbi->options.fs_dmask) | S_IFDIR;
++		inode->i_op = sbi->dir_ops;
++		inode->i_fop = &vxext_dir_operations;
++
++		VXEXT_I(inode)->i_start = CF_LE_W(de->start);
++
++		VXEXT_I(inode)->i_logstart = VXEXT_I(inode)->i_start;
++		error = vxext_calc_dir_size(inode);
++
++		if(error < 0)
++			return error;
++
++		VXEXT_I(inode)->mmu_private = inode->i_size;
++
++		inode->i_nlink = vxext_subdirs(inode);
++	}
++	else
++	{ 
++		// not a directory
++		inode->i_generation |= 1;
++		inode->i_mode = VXEXT_MKMODE(de->attr, S_IRWXUGO
++		    & ~sbi->options.fs_fmask) | S_IFREG;
++		VXEXT_I(inode)->i_start = CF_LE_W(de->start);
++
++		VXEXT_I(inode)->i_logstart = VXEXT_I(inode)->i_start;
++		inode->i_size = CF_LE_L(de->size);
++	        inode->i_op = &vxext_file_inode_operations;
++	        inode->i_fop = &vxext_file_operations;
++		inode->i_mapping->a_ops = &vxext_aops;
++		VXEXT_I(inode)->mmu_private = inode->i_size;
++	}
++
++	VXEXT_I(inode)->i_attrs = de->attr & ATTR_UNUSED;
++	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
++										 & ~((loff_t)sbi->cluster_size - 1)) >> 9;
++	inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
++		vxext_date_dos2unix(CF_LE_W(de->time),CF_LE_W(de->date));
++
++	inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec = 0;
++	inode->i_ctime.tv_sec = inode->i_mtime.tv_sec;
++	inode->i_ctime.tv_nsec = 0;
++
++	return 0;
++}
++
++int vxext_write_inode(struct inode *inode, int wait)
++{
++	struct super_block *sb = inode->i_sb;
++	struct buffer_head *bh;
++	struct vxext_dir_entry *raw_entry;
++	loff_t i_pos;
++	int err = 0;
++
++retry:
++	i_pos = VXEXT_I(inode)->i_pos;
++	if(inode->i_ino == VXEXT_ROOT_INO || !i_pos)
++	{
++		return 0;
++	}
++
++	lock_kernel();
++	if(!(bh = sb_bread(sb, i_pos >> VXEXT_SB(sb)->dir_per_block_bits)))
++	{
++		printk(KERN_ERR "VXEXT: unable to read inode block "
++		       "for updating (i_pos %lld)\n", i_pos);
++
++		err = -EIO;
++		goto out;
++	}
++
++	spin_lock(&vxext_inode_lock);
++	if(i_pos != VXEXT_I(inode)->i_pos)
++	{
++		spin_unlock(&vxext_inode_lock);
++		brelse(bh);
++		unlock_kernel();
++		goto retry;
++	}
++
++	raw_entry = &((struct vxext_dir_entry *) (bh->b_data))
++							  [i_pos & (VXEXT_SB(sb)->dir_per_block - 1)];
++
++	if(S_ISDIR(inode->i_mode))
++	{
++		raw_entry->attr = ATTR_DIR;
++		raw_entry->size = 0;
++	}
++	else
++	{
++		raw_entry->attr = ATTR_NONE;
++		raw_entry->size = CT_LE_L(inode->i_size);
++	}
++	
++	raw_entry->attr |= VXEXT_MKATTR(inode->i_mode) |
++										 VXEXT_I(inode)->i_attrs;
++	raw_entry->start = CT_LE_W(VXEXT_I(inode)->i_logstart);
++	vxext_date_unix2dos(inode->i_mtime.tv_sec,&raw_entry->time,&raw_entry->date);
++	raw_entry->time = CT_LE_W(raw_entry->time);
++	raw_entry->date = CT_LE_W(raw_entry->date);
++	spin_unlock(&vxext_inode_lock);
++	mark_buffer_dirty(bh);
++	if(wait)
++		err = sync_dirty_buffer(bh);
++	brelse(bh);
++
++out:
++	unlock_kernel();
++	return err;
++}
++
++int vxext_notify_change(struct dentry * dentry, struct iattr * attr)
++{
++	struct vxext_sb_info *sbi = VXEXT_SB(dentry->d_sb);
++	struct inode *inode = dentry->d_inode;
++	int mask, error = 0;
++
++	lock_kernel();
++
++	// FAT cannot truncate to a longer file
++	if (attr->ia_valid & ATTR_SIZE)
++	{
++		if (attr->ia_size > inode->i_size)
++		{
++			error = -EPERM;
++			goto out;
++		}
++	}
++
++	error = inode_change_ok(inode, attr);
++	if(error)
++	{
++		if(sbi->options.quiet)
++			error = 0;
++ 		goto out;
++	}
++
++	if(((attr->ia_valid & ATTR_UID) && 
++	    (attr->ia_uid != sbi->options.fs_uid)) ||
++	  ((attr->ia_valid & ATTR_GID) && 
++	    (attr->ia_gid != sbi->options.fs_gid)) ||
++	   ((attr->ia_valid & ATTR_MODE) &&
++	    (attr->ia_mode & ~VXEXT_VALID_MODE)))
++	{
++		error = -EPERM;
++	}
++
++	if(error)
++	{
++		if(sbi->options.quiet)  
++			error = 0;
++		goto out;
++	}
++
++	error = inode_setattr(inode, attr);
++	if(error)
++		goto out;
++
++	if(S_ISDIR(inode->i_mode))
++		mask = sbi->options.fs_dmask;
++	else
++		mask = sbi->options.fs_fmask;
++	inode->i_mode &= S_IFMT | (S_IRWXUGO & ~mask);
++
++out:
++	unlock_kernel();
++	return error;
++}
+diff -urNBb linux-2.6.23-org/fs/vxext/misc.c linux-2.6.23/fs/vxext/misc.c
+--- linux-2.6.23-org/fs/vxext/misc.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/misc.c	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,339 @@
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: misc.c 14 2007-04-30 13:56:08Z langner $
++
++***************************************************************************/
++
++#include <linux/fs.h>
++#include <linux/buffer_head.h>
++
++#include "vxext_fs.h"
++
++/*
++ * vxext_fs_panic reports a severe file system problem and sets the file system
++ * read-only. The file system can be made writable again by remounting it.
++ */
++
++static char panic_msg[512];
++
++void vxext_fs_panic(struct super_block *s, const char *fmt, ...)
++{
++	int not_ro;
++	va_list args;
++
++	va_start (args, fmt);
++	vsnprintf (panic_msg, sizeof(panic_msg), fmt, args);
++	va_end (args);
++
++	not_ro = !(s->s_flags & MS_RDONLY);
++	if(not_ro)
++		s->s_flags |= MS_RDONLY;
++
++	printk(KERN_ERR "VXEXT: Filesystem panic (dev %s)\n"
++	       "    %s\n", s->s_id, panic_msg);
++
++	if(not_ro)
++		printk(KERN_ERR "     File system has been set read-only\n");
++}
++
++void vxlock_fat(struct super_block *sb)
++{
++	down(&(VXEXT_SB(sb)->fat_lock));
++}
++
++void vxunlock_fat(struct super_block *sb)
++{
++	up(&(VXEXT_SB(sb)->fat_lock));
++}
++
++/*
++ * vxext_add_cluster tries to allocate a new cluster and adds it to the
++ * file represented by inode.
++ */
++int vxext_add_cluster(struct inode *inode)
++{
++	struct super_block *sb = inode->i_sb;
++	int ret, count, limit, new_dclus, new_fclus, last;
++	
++	/* 
++	 * We must locate the last cluster of the file to add this new
++	 * one (new_dclus) to the end of the link list (the FAT).
++	 *
++	 * In order to confirm that the cluster chain is valid, we
++	 * find out EOF first.
++	 */
++	last = new_fclus = 0;
++	if (VXEXT_I(inode)->i_start)
++	{
++		int ret, fclus, dclus;
++
++		ret = vxext_get_cluster(inode, FAT_ENT_EOF, &fclus, &dclus);
++		if(ret < 0)
++			return ret;
++
++		new_fclus = fclus + 1;
++		last = dclus;
++	}
++
++	/* find free FAT entry */
++	vxlock_fat(sb);
++	
++	if(VXEXT_SB(sb)->free_clusters == 0)
++	{
++		vxunlock_fat(sb);
++		return -ENOSPC;
++	}
++
++	limit = VXEXT_SB(sb)->clusters + 2;
++	new_dclus = VXEXT_SB(sb)->prev_free + 1;
++	for(count = 0; count < VXEXT_SB(sb)->clusters; count++, new_dclus++)
++	{
++		new_dclus = new_dclus % limit;
++		if(new_dclus < 2)
++			new_dclus = 2;
++
++		ret = vxext_access(sb, new_dclus, -1);
++		if(ret < 0)
++		{
++			vxunlock_fat(sb);
++			return ret;
++		}
++		else if(ret == FAT_ENT_FREE)
++			break;
++	}
++
++	if(count >= VXEXT_SB(sb)->clusters)
++	{
++		VXEXT_SB(sb)->free_clusters = 0;
++		vxunlock_fat(sb);
++		return -ENOSPC;
++	}
++
++	ret = vxext_access(sb, new_dclus, FAT_ENT_EOF);
++	if(ret < 0)
++	{
++		vxunlock_fat(sb);
++		return ret;
++	}
++
++	VXEXT_SB(sb)->prev_free = new_dclus;
++	if(VXEXT_SB(sb)->free_clusters != -1)
++		VXEXT_SB(sb)->free_clusters--;
++
++	vxunlock_fat(sb);
++
++	// add new one to the last of the cluster chain
++	if(last)
++	{
++		ret = vxext_access(sb, last, new_dclus);
++		if(ret < 0)
++			return ret;
++
++		vxext_cache_add(inode, new_fclus, new_dclus);
++	}
++	else
++	{
++		VXEXT_I(inode)->i_start = new_dclus;
++		VXEXT_I(inode)->i_logstart = new_dclus;
++		mark_inode_dirty(inode);
++	}
++
++	if(new_fclus != (inode->i_blocks / VXEXT_SB(sb)->sec_per_clus))
++	{
++		vxext_fs_panic(sb, "clusters badly computed (%d != %lu)",
++			new_fclus, inode->i_blocks / VXEXT_SB(sb)->sec_per_clus);
++		vxext_cache_inval_inode(inode);
++	}
++
++	inode->i_blocks += VXEXT_SB(sb)->cluster_size >> 9;
++
++	return new_dclus;
++}
++
++struct buffer_head *vxext_extend_dir(struct inode *inode)
++{
++	struct super_block *sb = inode->i_sb;
++	struct buffer_head *bh, *res = NULL;
++	int nr, sec_per_clus = VXEXT_SB(sb)->sec_per_clus;
++	sector_t sector, last_sector;
++
++	if(inode->i_ino == VXEXT_ROOT_INO)
++		return ERR_PTR(-ENOSPC);
++
++	nr = vxext_add_cluster(inode);
++	if(nr < 0)
++		return ERR_PTR(nr);
++	
++	sector = ((sector_t)nr - 2) * sec_per_clus + VXEXT_SB(sb)->data_start;
++	last_sector = sector + sec_per_clus;
++	for( ; sector < last_sector; sector++)
++	{
++		if((bh = sb_getblk(sb, sector)))
++		{
++			memset(bh->b_data, 0, sb->s_blocksize);
++			set_buffer_uptodate(bh);
++			mark_buffer_dirty(bh);
++
++			if (!res)
++				res = bh;
++			else
++				brelse(bh);
++		}
++	}
++
++	if(res == NULL)
++		res = ERR_PTR(-EIO);
++	
++	if(inode->i_size & (sb->s_blocksize - 1))
++	{
++		vxext_fs_panic(sb, "Odd directory size");
++		inode->i_size = (inode->i_size + sb->s_blocksize)
++			& ~((loff_t)sb->s_blocksize - 1);
++	}
++
++	inode->i_size += VXEXT_SB(sb)->cluster_size;
++	VXEXT_I(inode)->mmu_private += VXEXT_SB(sb)->cluster_size;
++
++	return res;
++}
++
++// Linear day numbers of the respective 1sts in non-leap years.
++static int day_n[] = { 0,31,59,90,120,151,181,212,243,273,304,334,0,0,0,0 };
++// JanFebMarApr May Jun Jul Aug Sep Oct Nov Dec
++
++
++extern struct timezone sys_tz;
++
++
++// Convert a MS-DOS time/date pair to a UNIX date (seconds since 1 1 70).
++int vxext_date_dos2unix(unsigned short time,unsigned short date)
++{
++	int month,year,secs;
++
++	// first subtract and mask after that... Otherwise, if
++	// date == 0, bad things happen
++	month = ((date >> 5) - 1) & 15;
++	year = date >> 9;
++	secs = (time & 31)*2+60*((time >> 5) & 63)+(time >> 11)*3600+86400*
++	    ((date & 31)-1+day_n[month]+(year/4)+year*365-((year & 3) == 0 &&
++	    month < 2 ? 1 : 0)+3653);
++			// days since 1.1.70 plus 80's leap day
++	secs += sys_tz.tz_minuteswest*60;
++
++	return secs;
++}
++
++
++// Convert linear UNIX date to a MS-DOS time/date pair.
++void vxext_date_unix2dos(int unix_date,unsigned short *time,
++												 unsigned short *date)
++{
++	int day,year,nl_day,month;
++
++	unix_date -= sys_tz.tz_minuteswest*60;
++
++	// Jan 1 GMT 00:00:00 1980. But what about another time zone?
++	if(unix_date < 315532800)
++		unix_date = 315532800;
++
++	*time = (unix_date % 60)/2+(((unix_date/60) % 60) << 5)+
++	    (((unix_date/3600) % 24) << 11);
++
++	day = unix_date/86400-3652;
++	year = day/365;
++	if((year+3)/4+365*year > day)
++		year--;
++
++	day -= (year+3)/4+365*year;
++	if(day == 59 && !(year & 3))
++	{
++		nl_day = day;
++		month = 2;
++	}
++	else
++	{
++		nl_day = (year & 3) || day <= 59 ? day : day-1;
++		for(month = 0; month < 12; month++)
++		{
++			if(day_n[month] > nl_day)
++				break;
++		}
++	}
++
++	*date = nl_day-day_n[month-1]+1+(month << 5)+(year << 9);
++}
++
++
++/* Returns the inode number of the directory entry at offset pos. If bh is
++   non-NULL, it is brelse'd before. Pos is incremented. The buffer header is
++   returned in bh.
++   AV. Most often we do it item-by-item. Makes sense to optimize.
++   AV. OK, there we go: if both bh and de are non-NULL we assume that we just
++   AV. want the next entry (took one explicit de=NULL in vfat/namei.c).
++   AV. It's done in vxext_get_entry() (inlined), here the slow case lives.
++   AV. Additionally, when we return -1 (i.e. reached the end of directory)
++   AV. we make bh NULL. 
++ */
++
++int vxext__get_entry(struct inode *dir, loff_t *pos,struct buffer_head **bh,
++										 struct vxext_dir_entry **de, loff_t *i_pos)
++{
++	struct super_block *sb = dir->i_sb;
++	struct vxext_sb_info *sbi = VXEXT_SB(sb);
++	sector_t phys, iblock;
++	loff_t offset;
++	int err;
++
++next:
++	offset = *pos;
++	if(*bh)
++		brelse(*bh);
++
++	*bh = NULL;
++	iblock = *pos >> sb->s_blocksize_bits;
++	err = vxext_bmap(dir, iblock, &phys);
++	if(err || !phys)
++		return -1;	// beyond EOF or error
++
++	*bh = sb_bread(sb, phys);
++	if(*bh == NULL) 
++	{
++		printk(KERN_ERR "VXEXT: Directory bread(block %llu) failed\n",
++		       (unsigned long long)phys);
++
++		// skip this block
++		*pos = (iblock + 1) << sb->s_blocksize_bits;
++		goto next;
++	}
++
++	offset &= sb->s_blocksize - 1;
++	*pos += sizeof(struct vxext_dir_entry);
++	*de = (struct vxext_dir_entry *)((*bh)->b_data + offset);
++	*i_pos = ((loff_t)phys << sbi->dir_per_block_bits) + (offset >> VXEXT_DIR_BITS);
++
++	return 0;
++}
+diff -urNBb linux-2.6.23-org/fs/vxext/namei.c linux-2.6.23/fs/vxext/namei.c
+--- linux-2.6.23-org/fs/vxext/namei.c	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/namei.c	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,643 @@
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: namei.c 27 2007-10-10 15:46:36Z langner $
++
++***************************************************************************/
++
++#include <linux/module.h>
++#include <linux/time.h>
++#include <linux/buffer_head.h>
++#include <linux/smp_lock.h>
++
++#include "vxext_fs.h"
++
++// normally this function is used to analyze filenames and check
++// if they conform. But as there are no real conventions for filenames
++// on VxWorks, we just copy&paste the filename to the resulting res
++// string.
++static int vxext_format_name(const unsigned char *name, int len,
++														 unsigned char *res,
++														 struct vxext_mount_options *opts)
++{
++	memcpy(res, name, len*sizeof(char));
++	while(len < VXEXT_NAMELEN) 
++	{
++		res[len] = ' ';
++		len++;
++	}
++
++	return 0;
++}
++
++// Locates a directory entry.  Uses unformatted name.
++static int vxext_find(struct inode *dir, const unsigned char *name, int len,
++											struct buffer_head **bh, struct vxext_dir_entry **de,
++											loff_t *i_pos)
++{
++	unsigned char vxext_name[VXEXT_NAMELEN];
++	int res;
++
++	res = vxext_format_name(name,len, vxext_name, &VXEXT_SB(dir->i_sb)->options);
++	if(res < 0)
++		return -ENOENT;
++
++	res = vxext_scan(dir, vxext_name, bh, de, i_pos);
++	if(!res)
++	{
++		if(name[0]=='.')
++		{
++			if(!((*de)->attr & ATTR_HIDDEN))
++				res = -ENOENT;
++		}
++		else
++		{
++			if((*de)->attr & ATTR_HIDDEN)
++				res = -ENOENT;
++		}
++	}
++
++	return res;
++}
++
++/*
++ * Compute the hash for the msdos name corresponding to the dentry.
++ * Note: if the name is invalid, we leave the hash code unchanged so
++ * that the existing dentry can be used. The msdos fs routines will
++ * return ENOENT or EINVAL as appropriate.
++ */
++static int vxext_hash(struct dentry *dentry, struct qstr *qstr)
++{
++	struct vxext_mount_options *options = &(VXEXT_SB(dentry->d_sb)->options);
++	unsigned char vxext_name[VXEXT_NAMELEN];
++	int error;
++	
++	error = vxext_format_name(qstr->name, qstr->len, vxext_name, options);
++	if(!error)
++		qstr->hash = full_name_hash(vxext_name, VXEXT_NAMELEN);
++
++	return 0;
++}
++
++/*
++ * Compare two msdos names. If either of the names are invalid,
++ * we fall back to doing the standard name comparison.
++ */
++static int vxext_cmp(struct dentry *dentry, struct qstr *a, struct qstr *b)
++{
++	struct vxext_mount_options *options = & (VXEXT_SB(dentry->d_sb)->options);
++	unsigned char a_vxext_name[VXEXT_NAMELEN], b_vxext_name[VXEXT_NAMELEN];
++	int error;
++
++	error = vxext_format_name(a->name, a->len, a_vxext_name, options);
++	if(error)
++		goto old_compare;
++
++	error = vxext_format_name(b->name, b->len, b_vxext_name, options);
++	if(error)
++		goto old_compare;
++
++	error = memcmp(a_vxext_name, b_vxext_name, VXEXT_NAMELEN);
++
++out:
++	return error;
++
++old_compare:
++	error = 1;
++	if(a->len == b->len)
++		error = memcmp(a->name, b->name, a->len);
++	goto out;
++}
++
++
++static struct dentry_operations vxext_dentry_operations =
++{
++	.d_hash			= vxext_hash,
++	.d_compare	= vxext_cmp,
++};
++
++/*
++ * AV. Wrappers for FAT sb operations. Is it wise?
++ */
++
++// Get inode using directory and name
++static struct dentry *vxext_lookup(struct inode *dir, struct dentry *dentry,
++																	 struct nameidata *nd)
++{
++	struct super_block *sb = dir->i_sb;
++	struct inode *inode = NULL;
++	struct vxext_dir_entry *de;
++	struct buffer_head *bh = NULL;
++	loff_t i_pos;
++	int res;
++	
++	dentry->d_op = &vxext_dentry_operations;
++
++	lock_kernel();
++	res = vxext_find(dir, dentry->d_name.name, dentry->d_name.len, &bh,
++			 &de, &i_pos);
++
++	if(res == -ENOENT)
++		goto add;
++
++	if(res < 0)
++		goto out;
++
++	inode = vxext_build_inode(sb, de, i_pos, &res);
++	if(res)
++		goto out;
++
++add:
++	res = 0;
++	dentry = d_splice_alias(inode, dentry);
++	if(dentry)
++		dentry->d_op = &vxext_dentry_operations;
++
++out:
++	brelse(bh);
++	unlock_kernel();
++	if(!res)
++		return dentry;
++
++	return ERR_PTR(res);
++}
++
++// Creates a directory entry (name is already formatted).
++static int vxext_add_entry(struct inode *dir, const unsigned char *name,
++													 struct buffer_head **bh,
++													 struct vxext_dir_entry **de,
++													 loff_t *i_pos, int is_dir, int is_hid)
++{
++	int res;
++
++	res = vxext_add_entries(dir, 1, bh, de, i_pos);
++	if(res < 0)
++		return res;
++
++	/*
++	 * XXX all times should be set by caller upon successful completion.
++	 */
++	dir->i_ctime = dir->i_mtime = CURRENT_TIME;
++	mark_inode_dirty(dir);
++
++	memcpy((*de)->name, name, VXEXT_NAMELEN);
++	(*de)->attr = is_dir ? ATTR_DIR : ATTR_ARCH;
++	if(is_hid)
++		(*de)->attr |= ATTR_HIDDEN;
++
++	(*de)->start = 0;
++	vxext_date_unix2dos(dir->i_mtime.tv_sec, &(*de)->time, &(*de)->date);
++	(*de)->size = 0;
++	mark_buffer_dirty(*bh);
++
++	return 0;
++}
++
++/***** Create a file */
++static int vxext_create(struct inode *dir, struct dentry *dentry, int mode,
++												struct nameidata *nd)
++{
++	struct super_block *sb = dir->i_sb;
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++	struct inode *inode;
++	loff_t i_pos;
++	int res, is_hid;
++	unsigned char vxext_name[VXEXT_NAMELEN];
++
++	lock_kernel();
++	res = vxext_format_name(dentry->d_name.name,dentry->d_name.len,
++				vxext_name, &VXEXT_SB(sb)->options);
++
++	if(res < 0)
++	{
++		unlock_kernel();
++		return res;
++	}
++
++	is_hid = (dentry->d_name.name[0]=='.') && (vxext_name[0]!='.');
++
++	// Have to do it due to foo vs. .foo conflicts
++	if(vxext_scan(dir, vxext_name, &bh, &de, &i_pos) >= 0)
++	{
++		brelse(bh);
++		unlock_kernel();
++		return -EINVAL;
++ 	}
++
++	inode = NULL;
++	res = vxext_add_entry(dir, vxext_name, &bh, &de, &i_pos, 0, is_hid);
++	if(res)
++	{
++		unlock_kernel();
++		return res;
++	}
++
++	inode = vxext_build_inode(dir->i_sb, de, i_pos, &res);
++	brelse(bh);
++	if(!inode)
++	{
++		unlock_kernel();
++		return res;
++	}
++
++	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
++	mark_inode_dirty(inode);
++	d_instantiate(dentry, inode);
++	unlock_kernel();
++
++	return 0;
++}
++
++// Remove a directory
++static int vxext_rmdir(struct inode *dir, struct dentry *dentry)
++{
++	struct inode *inode = dentry->d_inode;
++	loff_t i_pos;
++	int res;
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++
++	bh = NULL;
++	lock_kernel();
++	res = vxext_find(dir, dentry->d_name.name, dentry->d_name.len,
++			 &bh, &de, &i_pos);
++
++	if(res < 0)
++		goto rmdir_done;
++
++	/*
++	 * Check whether the directory is not in use, then check
++	 * whether it is empty.
++	 */
++	res = vxext_dir_empty(inode);
++	if(res)
++		goto rmdir_done;
++
++	de->name[0] = DELETED_FLAG;
++	mark_buffer_dirty(bh);
++	vxext_detach(inode);
++	inode->i_nlink = 0;
++	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
++	dir->i_nlink--;
++	mark_inode_dirty(inode);
++	mark_inode_dirty(dir);
++	res = 0;
++
++rmdir_done:
++	brelse(bh);
++	unlock_kernel();
++	return res;
++}
++
++// Make a directory
++static int vxext_mkdir(struct inode *dir, struct dentry *dentry, int mode)
++{
++	struct super_block *sb = dir->i_sb;
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++	struct inode *inode;
++	int res,is_hid;
++	unsigned char vxext_name[VXEXT_NAMELEN];
++	loff_t i_pos;
++
++	lock_kernel();
++	res = vxext_format_name(dentry->d_name.name,dentry->d_name.len,
++				vxext_name, &VXEXT_SB(sb)->options);
++	
++	if(res < 0)
++	{
++		unlock_kernel();
++		return res;
++	}
++
++	is_hid = (dentry->d_name.name[0]=='.') && (vxext_name[0]!='.');
++	// foo vs .foo situation
++	if(vxext_scan(dir, vxext_name, &bh, &de, &i_pos) >= 0)
++		goto out_exist;
++
++	res = vxext_add_entry(dir, vxext_name, &bh, &de, &i_pos, 1, is_hid);
++	if(res)
++		goto out_unlock;
++
++	inode = vxext_build_inode(dir->i_sb, de, i_pos, &res);
++	if(!inode)
++	{
++		brelse(bh);
++		goto out_unlock;
++	}
++
++	res = 0;
++
++	dir->i_nlink++;
++	inode->i_nlink = 2; // no need to mark them dirty
++
++	res = vxext_new_dir(inode, dir);
++	if(res)
++		goto mkdir_error;
++
++	brelse(bh);
++	d_instantiate(dentry, inode);
++	res = 0;
++
++out_unlock:
++	unlock_kernel();
++	return res;
++
++mkdir_error:
++	inode->i_nlink = 0;
++	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
++	dir->i_nlink--;
++	mark_inode_dirty(inode);
++	mark_inode_dirty(dir);
++	de->name[0] = DELETED_FLAG;
++	mark_buffer_dirty(bh);
++	brelse(bh);
++	vxext_detach(inode);
++	iput(inode);
++	goto out_unlock;
++
++out_exist:
++	brelse(bh);
++	res = -EINVAL;
++	goto out_unlock;
++}
++
++// Unlink a file */
++static int vxext_unlink(struct inode *dir, struct dentry *dentry)
++{
++	struct inode *inode = dentry->d_inode;
++	loff_t i_pos;
++	int res;
++	struct buffer_head *bh;
++	struct vxext_dir_entry *de;
++
++	bh = NULL;
++	lock_kernel();
++	res = vxext_find(dir, dentry->d_name.name, dentry->d_name.len,
++			 &bh, &de, &i_pos);
++
++	if(res < 0)
++		goto unlink_done;
++
++	de->name[0] = DELETED_FLAG;
++	mark_buffer_dirty(bh);
++	vxext_detach(inode);
++	brelse(bh);
++	inode->i_nlink = 0;
++	inode->i_ctime = dir->i_ctime = dir->i_mtime = CURRENT_TIME;
++	mark_inode_dirty(inode);
++	mark_inode_dirty(dir);
++	res = 0;
++
++unlink_done:
++	unlock_kernel();
++	return res;
++}
++
++static int do_vxext_rename(struct inode *old_dir, unsigned char *old_name,
++													 struct dentry *old_dentry,
++													 struct inode *new_dir, unsigned char *new_name,
++													 struct dentry *new_dentry,
++													 struct buffer_head *old_bh,
++													 struct vxext_dir_entry *old_de,
++													 loff_t old_i_pos, int is_hid)
++{
++	struct buffer_head *new_bh=NULL,*dotdot_bh=NULL;
++	struct vxext_dir_entry *new_de,*dotdot_de;
++	struct inode *old_inode,*new_inode;
++	loff_t new_i_pos, dotdot_i_pos;
++	int error;
++	int is_dir;
++
++	old_inode = old_dentry->d_inode;
++	new_inode = new_dentry->d_inode;
++	is_dir = S_ISDIR(old_inode->i_mode);
++
++	if(vxext_scan(new_dir, new_name, &new_bh, &new_de, &new_i_pos) >= 0
++	   && !new_inode)
++	{
++		goto degenerate_case;
++	}
++
++	if(is_dir)
++	{
++		if(new_inode)
++		{
++			error = vxext_dir_empty(new_inode);
++			if (error)
++				goto out;
++		}
++
++		if(vxext_scan(old_inode, VXEXT_DOTDOT, &dotdot_bh,
++			     &dotdot_de, &dotdot_i_pos) < 0)
++		{
++			error = -EIO;
++			goto out;
++		}
++	}
++
++	if(!new_bh)
++	{
++		error = vxext_add_entry(new_dir, new_name, &new_bh, &new_de,
++						&new_i_pos, is_dir, is_hid);
++		if(error)
++			goto out;
++	}
++
++	new_dir->i_version++;
++
++	// There we go
++	if(new_inode)
++		vxext_detach(new_inode);
++		
++	old_de->name[0] = DELETED_FLAG;
++	mark_buffer_dirty(old_bh);
++	vxext_detach(old_inode);
++	vxext_attach(old_inode, new_i_pos);
++	
++	if(is_hid)
++		VXEXT_I(old_inode)->i_attrs |= ATTR_HIDDEN;
++	else
++		VXEXT_I(old_inode)->i_attrs &= ~ATTR_HIDDEN;
++
++	mark_inode_dirty(old_inode);
++	old_dir->i_version++;
++	old_dir->i_ctime = old_dir->i_mtime = CURRENT_TIME;
++	mark_inode_dirty(old_dir);
++
++	if(new_inode)
++	{
++		new_inode->i_nlink--;
++		new_inode->i_ctime = CURRENT_TIME;
++		mark_inode_dirty(new_inode);
++	}
++
++	if(dotdot_bh)
++	{
++		dotdot_de->start = CT_LE_W(VXEXT_I(new_dir)->i_logstart);
++		mark_buffer_dirty(dotdot_bh);
++		old_dir->i_nlink--;
++		mark_inode_dirty(old_dir);
++
++		if(new_inode)
++		{
++			new_inode->i_nlink--;
++			mark_inode_dirty(new_inode);
++		}
++		else
++		{
++			new_dir->i_nlink++;
++			mark_inode_dirty(new_dir);
++		}
++	}
++	error = 0;
++
++out:
++	brelse(new_bh);
++	brelse(dotdot_bh);
++	return error;
++
++degenerate_case:
++	error = -EINVAL;
++
++	if(new_de!=old_de)
++		goto out;
++	if(is_hid)
++		VXEXT_I(old_inode)->i_attrs |= ATTR_HIDDEN;
++	else
++		VXEXT_I(old_inode)->i_attrs &= ~ATTR_HIDDEN;
++
++	mark_inode_dirty(old_inode);
++	old_dir->i_version++;
++	old_dir->i_ctime = old_dir->i_mtime = CURRENT_TIME;
++	mark_inode_dirty(old_dir);
++
++	return 0;
++}
++
++// Rename, a wrapper for rename_same_dir & rename_diff_dir
++static int vxext_rename(struct inode *old_dir, struct dentry *old_dentry,
++												struct inode *new_dir, struct dentry *new_dentry)
++{
++	struct buffer_head *old_bh;
++	struct vxext_dir_entry *old_de;
++	loff_t old_i_pos;
++	int error, is_hid, old_hid; // if new file and old file are hidden
++	unsigned char old_vxext_name[VXEXT_NAMELEN], new_vxext_name[VXEXT_NAMELEN];
++
++	lock_kernel();
++	error = vxext_format_name(old_dentry->d_name.name,
++				  old_dentry->d_name.len,old_vxext_name,
++				  &VXEXT_SB(old_dir->i_sb)->options);
++	if(error < 0)
++		goto rename_done;
++
++	error = vxext_format_name(new_dentry->d_name.name,
++				  new_dentry->d_name.len,new_vxext_name,
++				  &VXEXT_SB(new_dir->i_sb)->options);
++	if(error < 0)
++		goto rename_done;
++
++	is_hid  = (new_dentry->d_name.name[0]=='.') && (new_vxext_name[0]!='.');
++	old_hid = (old_dentry->d_name.name[0]=='.') && (old_vxext_name[0]!='.');
++	error = vxext_scan(old_dir, old_vxext_name, &old_bh, &old_de, &old_i_pos);
++	if(error < 0)
++		goto rename_done;
++
++	error = do_vxext_rename(old_dir, old_vxext_name, old_dentry,
++				new_dir, new_vxext_name, new_dentry,
++				old_bh, old_de, old_i_pos, is_hid);
++	brelse(old_bh);
++
++rename_done:
++	unlock_kernel();
++	return error;
++}
++
++static struct inode_operations vxext_dir_inode_operations =
++{
++	.lookup		= vxext_lookup,
++	.create		= vxext_create,
++	.unlink		= vxext_unlink,
++	.mkdir		= vxext_mkdir,
++	.rmdir		= vxext_rmdir,
++	.rename		= vxext_rename,
++	.setattr	= vxext_notify_change,
++};
++
++static int vx_fill_super(struct super_block *sb,void *data, int silent)
++{
++	int res;
++
++	res = vxext_fill_super(sb, data, silent, &vxext_dir_inode_operations);
++	if(res)
++	  return res;
++
++	sb->s_root->d_op = &vxext_dentry_operations;
++	return 0;
++}
++
++static int vxext_get_sb(struct file_system_type *fs_type,
++												int flags, const char *dev_name,
++												void *data, struct vfsmount *mnt)
++{
++	return get_sb_bdev(fs_type, flags, dev_name, data, vx_fill_super, mnt);
++}
++
++static struct file_system_type vxext_fs_type =
++{
++	.owner		= THIS_MODULE,
++	.name			= "vxext",
++	.get_sb		= vxext_get_sb,
++	.kill_sb	= kill_block_super,
++	.fs_flags	= FS_REQUIRES_DEV,
++};
++
++static int __init init_vxext_fs(void)
++{
++	vxext_hash_init();
++	if(vxext_init_inodecache() == 0)
++	{
++		return register_filesystem(&vxext_fs_type);
++	}
++
++	return -ENOMEM;
++}
++
++static void __exit exit_vxext_fs(void)
++{
++	vxext_destroy_inodecache();
++	unregister_filesystem(&vxext_fs_type);
++}
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Jens Langner <Jens.Langner@light-speed.de>");
++MODULE_DESCRIPTION("VxWorks extended DOS filesystem support");
++MODULE_VERSION("1.2");
++
++module_init(init_vxext_fs)
++module_exit(exit_vxext_fs)
+diff -urNBb linux-2.6.23-org/fs/vxext/vxext_fs.h linux-2.6.23/fs/vxext/vxext_fs.h
+--- linux-2.6.23-org/fs/vxext/vxext_fs.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/vxext_fs.h	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,254 @@
++#ifndef _LINUX_VXEXT_FS_H
++#define _LINUX_VXEXT_FS_H
++
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: vxext_fs.h 14 2007-04-30 13:56:08Z langner $
++
++***************************************************************************/
++
++/*
++ * The VxWorks extended DOS filesystem constants/structures
++ */
++#include <asm/byteorder.h>
++
++#define SECTOR_SIZE	512							// sector size (bytes)
++#define SECTOR_BITS	9								// log2(SECTOR_SIZE)
++#define VXEXT_DPB	(VXEXT_DPS)				// dir entries per block
++#define VXEXT_DPB_BITS	3						// log2(VXEXT_DPB)
++#define VXEXT_DPS	(SECTOR_SIZE / sizeof(struct vxext_dir_entry))
++#define VXEXT_DPS_BITS	3						// log2(VXEXT_DPS)
++
++#define VXEXT_SUPER_MAGIC 0x5657		// VW 
++#define VXEXT_SUPER_MAGIC_STRING "VXEXT1.0"
++
++#define VXEXT_ROOT_INO	1	// == MINIX_ROOT_INO
++#define VXEXT_DIR_BITS	6	// log2(sizeof(struct vxext_dir_entry))
++
++// directory limit
++#define FAT_MAX_DIR_ENTRIES	(65536)
++#define FAT_MAX_DIR_SIZE	(FAT_MAX_DIR_ENTRIES << VXEXT_DIR_BITS)
++
++#define ATTR_NONE    0	// no attribute bits
++#define ATTR_RO      1  // read-only
++#define ATTR_HIDDEN  2  // hidden
++#define ATTR_SYS     4  // system
++#define ATTR_VOLUME  8  // volume label
++#define ATTR_DIR     16 // directory
++#define ATTR_ARCH    32 // archived
++
++// attribute bits that are copied "as is"
++#define ATTR_UNUSED  (ATTR_VOLUME | ATTR_ARCH | ATTR_SYS | ATTR_HIDDEN)
++
++// bits that are used by the Windows 95/Windows NT extended FAT
++//#define ATTR_EXT     (ATTR_RO | ATTR_HIDDEN | ATTR_SYS | ATTR_VOLUME)
++
++#define DELETED_FLAG 0xe5 // mark file as deleted when in name[0]
++#define IS_FREE(n) (!*(n) || *(n) == DELETED_FLAG)
++
++// valid file mode bits
++#define VXEXT_VALID_MODE (S_IFREG | S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO)
++
++// Convert attribute bits and a mask to the UNIX mode.
++#define VXEXT_MKMODE(a, m) (m & (a & ATTR_RO ? S_IRUGO|S_IXUGO : S_IRWXUGO))
++
++// Convert the UNIX mode to MS-DOS attribute bits.
++#define VXEXT_MKATTR(m) ((m & S_IWUGO) ? ATTR_NONE : ATTR_RO)
++
++#define VXEXT_NAMELEN 40	// maximum VXEXT1.0 name length
++#define VXEXT_DOT    	".                                        " // "."
++#define VXEXT_DOTDOT 	"..                                       " // ".."
++
++// media of boot sector
++#define VXEXT_VALID_MEDIA(x)	((0xF8 <= (x) && (x) <= 0xFF) || (x) == 0xF0)
++#define VXEXT_FIRST_ENT(s, x)	(0xFF00 | (x))
++
++// maximum number of clusters allowed on a VXEXT filesystem
++#define MAX_FAT_VXEXT 0xFFFE
++
++// bad cluster mark
++#define BAD_FAT16 0xFFF7
++
++// standard EOF marks
++#define EOF_FAT16 0xFFFF
++
++#define FAT_ENT_FREE    (0)
++#define FAT_ENT_BAD     (BAD_FAT16)
++#define FAT_ENT_EOF     (EOF_FAT16)
++
++/*
++ * Conversion from and to little-endian byte order. (no-op on i386/i486)
++ *
++ * Naming: Ca_b_c, where a: F = from, T = to, b: LE = little-endian,
++ * BE = big-endian, c: W = word (16 bits), L = longword (32 bits)
++ */
++
++#define CF_LE_W(v) le16_to_cpu(v)
++#define CF_LE_L(v) le32_to_cpu(v)
++#define CT_LE_W(v) cpu_to_le16(v)
++#define CT_LE_L(v) cpu_to_le32(v)
++
++struct vxext_boot_sector 
++{
++	__u8	ignored[3];				// 0x00 - Boot strap short or near jump instruction
++	__u8	system_id[8];			// 0x03 - SystemID string									(VXEXT1.0)
++	__u8	sector_size[2];		// 0x0b - Bytes per Sector								(512)
++	__u8	sec_per_clus;			// 0x0d - Sectors per Cluster							(0)
++	__u16	reserved;					// 0x0e - Reserved Sectors								(1)
++	__u8	fats;							// 0x10 - Number of FAT tables						(2)
++	__u8	dir_entries[2];		// 0x11 - Max. Number of Rootdir entries	(1024)
++	__u8	sectors[2];				// 0x13 - Number of Sectors - short       (==0)
++	__u8	media;						// 0x15 - Media Format ID code						(0xF8)
++	__u16	fat_length;				// 0x16 - Sectors per FAT									(256)
++	__u16	secs_track;				// 0x18 - Sectors per Track								(171)
++	__u16	heads;						// 0x1a - Number of Heads									(6)
++	__u32	hidden;						// 0x1c - Number of hidden Sectors				(0)
++	__u32	total_sect;				// 0x20 - Number of Sectors - long        (>0)
++
++	__u8	physical_num;			// 0x24 - Physical driver number/ID
++	__u8	boot_sig;					// 0x26 - Boot signature record
++	__u32	vol_id;						// 0x27 - Binary volume ID number
++	__u8	vol_label[11];		// 0x2b - Volume label string
++};
++
++struct vxext_dir_entry 
++{
++	__u8	name[VXEXT_NAMELEN];// 0x00 - Filename max. 40 chars
++	__u8	reserved[13];				// 0x28 - Reserved
++	__u8	attr;								// 0x35 - File attributes
++	__u16	time;								// 0x36 - File creation time (ctime)
++	__u16	date;								// 0x38 - File creation date (cdate)
++	__u16	start;							// 0x40 - Starting cluster number
++	__u32	size;								// 0x42 - File size (in bytes)
++};
++
++#ifdef __KERNEL__
++
++#include <linux/buffer_head.h>
++#include <linux/string.h>
++#include <linux/nls.h>
++
++#include "vxext_fs_i.h"
++#include "vxext_fs_sb.h"
++
++static inline struct vxext_sb_info *VXEXT_SB(struct super_block *sb)
++{
++	return sb->s_fs_info;
++}
++
++static inline struct vxext_inode_info *VXEXT_I(struct inode *inode)
++{
++	return container_of(inode, struct vxext_inode_info, vfs_inode);
++}
++
++// vxext/cache.c
++extern int vxext_access(struct super_block *sb, int nr, int new_value);
++extern int __vxext_access(struct super_block *sb, int nr, int new_value);
++extern int vxext_bmap(struct inode *inode, sector_t sector, sector_t *phys);
++extern void vxext_cache_init(struct super_block *sb);
++extern void vxext_cache_lookup(struct inode *inode, int cluster, int *f_clu,
++															 int *d_clu);
++extern void vxext_cache_add(struct inode *inode, int f_clu, int d_clu);
++extern void vxext_cache_inval_inode(struct inode *inode);
++extern int vxext_get_cluster(struct inode *inode, int cluster,
++														 int *fclus, int *dclus);
++extern int vxext_free(struct inode *inode, int skip);
++
++// vxext/dir.c
++extern struct file_operations vxext_dir_operations;
++extern int vxext_readdir(struct file *filp, void *dirent, filldir_t filldir);
++extern int vxext_add_entries(struct inode *dir, int slots, struct buffer_head **bh,
++														 struct vxext_dir_entry **de, loff_t *i_pos);
++extern int vxext_new_dir(struct inode *dir, struct inode *parent);
++extern int vxext_dir_empty(struct inode *dir);
++extern int vxext_subdirs(struct inode *dir);
++extern int vxext_scan(struct inode *dir, const unsigned char *name,
++											struct buffer_head **res_bh,
++											struct vxext_dir_entry **res_de, loff_t *i_pos);
++
++// vxext/file.c
++extern struct file_operations vxext_file_operations;
++extern struct inode_operations vxext_file_inode_operations;
++extern int vxext_get_block(struct inode *inode, sector_t iblock,
++													 struct buffer_head *bh_result, int create);
++extern void vxext_truncate(struct inode *inode);
++
++// vxext/inode.c
++extern void vxext_hash_init(void);
++extern void vxext_attach(struct inode *inode, loff_t i_pos);
++extern void vxext_detach(struct inode *inode);
++extern struct inode *vxext_iget(struct super_block *sb, loff_t i_pos);
++extern struct inode *vxext_build_inode(struct super_block *sb,
++																			 struct vxext_dir_entry *de,
++																			 loff_t i_pos, int *res);
++extern void vxext_delete_inode(struct inode *inode);
++extern void vxext_clear_inode(struct inode *inode);
++extern void vxext_put_super(struct super_block *sb);
++int vxext_fill_super(struct super_block *sb, void *data, int silent,
++										struct inode_operations *fs_dir_inode_ops);
++extern int vxext_statfs(struct dentry *dentry, struct kstatfs *buf);
++extern int vxext_write_inode(struct inode *inode, int wait);
++extern int vxext_notify_change(struct dentry * dentry, struct iattr * attr);
++
++// vxext/misc.c
++extern void vxext_fs_panic(struct super_block *s, const char *fmt, ...);
++extern void vxlock_fat(struct super_block *sb);
++extern void vxunlock_fat(struct super_block *sb);
++extern int vxext_add_cluster(struct inode *inode);
++extern struct buffer_head *vxext_extend_dir(struct inode *inode);
++extern int vxext_date_dos2unix(unsigned short time, unsigned short date);
++extern void vxext_date_unix2dos(int unix_date, unsigned short *time,
++																unsigned short *date);
++extern int vxext__get_entry(struct inode *dir, loff_t *pos,
++														struct buffer_head **bh,
++														struct vxext_dir_entry **de, loff_t *i_pos);
++
++static __inline__ int vxext_get_entry(struct inode *dir, loff_t *pos,
++																			struct buffer_head **bh,
++																			struct vxext_dir_entry **de,
++																			loff_t *i_pos)
++{
++	// Fast stuff first
++	if(*bh && *de &&
++	   (*de - (struct vxext_dir_entry *)(*bh)->b_data) < VXEXT_SB(dir->i_sb)->dir_per_block - 1)
++	{
++		*pos += sizeof(struct vxext_dir_entry);
++		(*de)++;
++		(*i_pos)++;
++		return 0;
++	}
++
++	return vxext__get_entry(dir, pos, bh, de, i_pos);
++}
++
++extern int __init vxext_init_inodecache(void);
++extern void __exit vxext_destroy_inodecache(void);
++extern void vxext_hash_init(void);
++
++#endif /* __KERNEL__ */
++
++#endif
+diff -urNBb linux-2.6.23-org/fs/vxext/vxext_fs_i.h linux-2.6.23/fs/vxext/vxext_fs_i.h
+--- linux-2.6.23-org/fs/vxext/vxext_fs_i.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/vxext_fs_i.h	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,55 @@
++#ifndef _VXEXT_FS_I
++#define _VXEXT_FS_I
++
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: vxext_fs_i.h 14 2007-04-30 13:56:08Z langner $
++
++***************************************************************************/
++
++#include <linux/fs.h>
++
++/*
++ * VxWorks extended DOS file system inode data in memory
++ */
++
++struct vxext_inode_info
++{
++	// cache of lastest accessed cluster
++	int file_cluster;							// cluster number in the file.
++	int disk_cluster;							// cluster number on disk.
++
++	loff_t mmu_private;
++	int i_start;									// first cluster or 0
++	int i_logstart;								// logical first cluster
++	int i_attrs;									// unused attribute bits
++	loff_t i_pos;									// on-disk position of directory entry or 0
++	struct list_head i_fat_hash;	// hash by i_location
++	struct inode vfs_inode;
++};
++
++#endif
+diff -urNBb linux-2.6.23-org/fs/vxext/vxext_fs_sb.h linux-2.6.23/fs/vxext/vxext_fs_sb.h
+--- linux-2.6.23-org/fs/vxext/vxext_fs_sb.h	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/fs/vxext/vxext_fs_sb.h	2007-10-24 12:48:39.000000000 +0200
+@@ -0,0 +1,81 @@
++#ifndef _VXEXT_FS_SB
++#define _VXEXT_FS_SB
++
++/* vim:set ts=2 nowrap: ****************************************************
++
++ VXEXT fs - VxWorks extended DOS filesystem support
++ Copyright (c) 2004-2005 by Jens Langner <Jens.Langner@light-speed.de>
++
++ This filesystem module is a reverse engineered implementation of the so
++ called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
++ RTOS operating system. The sources are largly based on the FAT and MSDOS
++ filesystem routines found in the main Linux kernel sources which are
++ copyright by their respecitive authors. However, minor cosmetic changes
++ have been made and non-required parts were removed wherever possible.
++
++ This program is free software; you can redistribute it and/or modify
++ it under the terms of the GNU General Public License as published by
++ the Free Software Foundation; either version 2 of the License, or
++ (at your option) any later version.
++
++ This program is distributed in the hope that it will be useful,
++ but WITHOUT ANY WARRANTY; without even the implied warranty of
++ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ GNU General Public License for more details.
++
++ You should have received a copy of the GNU General Public License
++ along with this program; if not, write to the Free Software
++ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++
++ $Id: vxext_fs_sb.h 14 2007-04-30 13:56:08Z langner $
++
++***************************************************************************/
++
++/*
++ * VxWorks extended DOS file system in-core superblock data
++ */
++
++struct vxext_mount_options 
++{
++	uid_t fs_uid;
++	gid_t fs_gid;
++	unsigned short fs_fmask;
++	unsigned short fs_dmask;
++	unsigned quiet:1;				 // set = fake successful chmods and chowns
++};
++
++#define FAT_CACHE_NR	8 // number of FAT cache
++
++struct vxext_cache 
++{
++	int start_cluster;				// first cluster of the chain.
++	int file_cluster;					// cluster number in the file.
++	int disk_cluster;					// cluster number on disk.
++	struct vxext_cache *next; // next cache entry
++};
++
++struct vxext_sb_info 
++{
++	unsigned short sec_per_clus; // sectors/cluster
++	unsigned int cluster_size;   // cluster size
++	unsigned char fats;					 // number of FATs
++	unsigned short fat_start;
++	unsigned long fat_length;    // FAT start & length (sec.)
++	unsigned long dir_start;
++	unsigned short dir_entries;  // root dir start & entries
++	unsigned long data_start;    // first data sector
++	unsigned long clusters;      // number of clusters
++	unsigned long root_cluster;  // first cluster of the root directory
++	struct semaphore fat_lock;
++	int prev_free;               // previously allocated cluster number
++	int free_clusters;           // -1 if undefined
++	struct vxext_mount_options options;
++	void *dir_ops;							 // Opaque; default directory operations
++	int dir_per_block;					 // dir entries per block
++	int dir_per_block_bits;	     // log2(dir_per_block)
++
++	spinlock_t cache_lock;
++	struct vxext_cache cache_array[FAT_CACHE_NR], *cache;
++};
++
++#endif
