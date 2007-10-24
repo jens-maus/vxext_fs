@@ -1,18 +1,18 @@
-diff -urNBb linux-2.6.18-org/Documentation/filesystems/00-INDEX linux-2.6.18/Documentation/filesystems/00-INDEX
---- linux-2.6.18-org/Documentation/filesystems/00-INDEX	2007-04-30 16:32:02.000000000 +0200
-+++ linux-2.6.18/Documentation/filesystems/00-INDEX	2007-04-30 16:36:31.246902982 +0200
-@@ -86,6 +86,8 @@
- 	- v9fs is a Unix implementation of the Plan 9 9p remote fs protocol.
+diff -urNBb linux-2.6.23-org/Documentation/filesystems/00-INDEX linux-2.6.23/Documentation/filesystems/00-INDEX
+--- linux-2.6.23-org/Documentation/filesystems/00-INDEX	2007-10-09 22:31:38.000000000 +0200
++++ linux-2.6.23/Documentation/filesystems/00-INDEX	2007-10-24 12:50:46.000000000 +0200
+@@ -88,6 +88,8 @@
+ 	- info on the ufs filesystem.
  vfat.txt
  	- info on using the VFAT filesystem used in Windows NT and Windows 95
-+vxfat.txt
++vxext.txt
 +	- info on using the VxWorks 5.2+ extended FAT filesystem
  vfs.txt
  	- overview of the Virtual File System
  xfs.txt
-diff -urNBb linux-2.6.18-org/Documentation/filesystems/vxext.txt linux-2.6.18/Documentation/filesystems/vxext.txt
---- linux-2.6.18-org/Documentation/filesystems/vxext.txt	1970-01-01 01:00:00.000000000 +0100
-+++ linux-2.6.18/Documentation/filesystems/vxext.txt	2007-04-30 16:36:31.238903630 +0200
+diff -urNBb linux-2.6.23-org/Documentation/filesystems/vxext.txt linux-2.6.23/Documentation/filesystems/vxext.txt
+--- linux-2.6.23-org/Documentation/filesystems/vxext.txt	1970-01-01 01:00:00.000000000 +0100
++++ linux-2.6.23/Documentation/filesystems/vxext.txt	2007-10-24 12:49:08.000000000 +0200
 @@ -0,0 +1,141 @@
 +USING VXEXT
 +----------------------------------------------------------------------
@@ -155,10 +155,10 @@ diff -urNBb linux-2.6.18-org/Documentation/filesystems/vxext.txt linux-2.6.18/Do
 +Jens.Langner@light-speed.de
 +http://www.jens-langner.de/
 +March 2005
-diff -urNBb linux-2.6.18-org/fs/Kconfig linux-2.6.18/fs/Kconfig
---- linux-2.6.18-org/fs/Kconfig	2007-04-30 16:32:02.000000000 +0200
-+++ linux-2.6.18/fs/Kconfig	2007-04-30 16:36:31.246902982 +0200
-@@ -1394,6 +1394,36 @@
+diff -urNBb linux-2.6.23-org/fs/Kconfig linux-2.6.23/fs/Kconfig
+--- linux-2.6.23-org/fs/Kconfig	2007-10-09 22:31:38.000000000 +0200
++++ linux-2.6.23/fs/Kconfig	2007-10-24 12:49:08.000000000 +0200
+@@ -1514,6 +1514,36 @@
  	  Y here.  This will result in _many_ additional debugging messages to be
  	  written to the system log.
  
@@ -195,10 +195,10 @@ diff -urNBb linux-2.6.18-org/fs/Kconfig linux-2.6.18/fs/Kconfig
  endmenu
  
  menu "Network File Systems"
-diff -urNBb linux-2.6.18-org/fs/Makefile linux-2.6.18/fs/Makefile
---- linux-2.6.18-org/fs/Makefile	2007-04-30 16:32:02.000000000 +0200
-+++ linux-2.6.18/fs/Makefile	2007-04-30 16:36:31.246902982 +0200
-@@ -64,6 +64,7 @@
+diff -urNBb linux-2.6.23-org/fs/Makefile linux-2.6.23/fs/Makefile
+--- linux-2.6.23-org/fs/Makefile	2007-10-09 22:31:38.000000000 +0200
++++ linux-2.6.23/fs/Makefile	2007-10-24 12:49:08.000000000 +0200
+@@ -79,6 +79,7 @@
  obj-$(CONFIG_FAT_FS)		+= fat/
  obj-$(CONFIG_MSDOS_FS)		+= msdos/
  obj-$(CONFIG_VFAT_FS)		+= vfat/
