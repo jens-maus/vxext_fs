@@ -748,28 +748,24 @@ int vxext_fill_super(struct super_block *sb, void *data, int silent,
 		goto out_invalid;
 	}
 
-	// on VXEXT 1.0 filesystem the sectors_per_cluster field is set to
+	// on some VXEXT 1.0 filesystems the sectors_per_cluster field is set to
 	// zero to signal that the sectors per cluster are simply
-	// max_sectors / 65535
+	// max_sectors / 65535 - therefore we check that case here
 	if(b->sec_per_clus != 0)
-	{
-		if (!silent)
-			printk(KERN_ERR "VXEXT: sec_per_cluster != 0");
-
-		brelse(bh);
-		goto out_invalid;
-	}
-
-  // calculate the sectors per cluster dynamically out of the total
-  // sectors the partition has. This somehow breask the FAT16 DOS
-  // specification but is exactly what Wind River does for filling
-  // up the whole disk with having more than 2GB data on the disk.
-  // Please note that if there is any remainder out of the division,
-  // then the sectors per cluster size is increased by one, rounding
-  // up to a "safe" cluster size.
-  sbi->sec_per_clus = total_sectors / FAT_MAX_DIR_ENTRIES;
-  if(sbi->sec_per_clus % FAT_MAX_DIR_ENTRIES)
-    sbi->sec_per_clus++;
+    sbi->sec_per_clus = b->sec_per_clus
+  else
+  {
+    // calculate the sectors per cluster dynamically out of the total
+    // sectors the partition has. This somehow breask the FAT16 DOS
+    // specification but is exactly what Wind River does for filling
+    // up the whole disk with having more than 2GB data on the disk.
+    // Please note that if there is any remainder out of the division,
+    // then the sectors per cluster size is increased by one, rounding
+    // up to a "safe" cluster size.
+    sbi->sec_per_clus = total_sectors / FAT_MAX_DIR_ENTRIES;
+    if(sbi->sec_per_clus % FAT_MAX_DIR_ENTRIES)
+      sbi->sec_per_clus++;
+  }
 
 	if(sbi->sec_per_clus == 0)
 	{

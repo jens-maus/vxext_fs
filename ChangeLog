@@ -5,6 +5,12 @@ VXEXT-FS - VxWorks extended DOS filesystem implementation
 
 $Id$
 
+2007-11-22  Jens Langner <Jens.Langner@light-speed.de>
+
+  * inode.c: fixed the sectors/cluster calculation so that in
+    case a VXEXT1.0 filesystem has got a valid sectors/cluster
+    field, we are still able to access the filesystem structure.
+
 2007-10-10  Jens Langner <Jens.Langner@light-speed.de>
 
   * misc: bumped version to 1.2 due to large changes.
