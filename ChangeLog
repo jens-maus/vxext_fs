@@ -7,6 +7,7 @@ $Id$
 
 2008-10-06  Jens Langner <Jens.Langner@light-speed.de>
 
+  * misc: bumped version to 1.3 for release
   * inode.c: removed the sectors/track and heads check as these
     are values a VXEXT1.0 file system does not care about.
 
