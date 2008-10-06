@@ -692,24 +692,6 @@ int vxext_fill_super(struct super_block *sb, void *data, int silent,
 		goto out_invalid;
 	}
 
-	if(b->secs_track == 0) 
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus sectors-per-track value\n");
-
-		brelse(bh);
-		goto out_invalid;
-	}
-
-	if(b->heads == 0)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus number-of-heads value\n");
-
-		brelse(bh);
-		goto out_invalid;
-	}
-	
 	media = b->media;
 	if(!VXEXT_VALID_MEDIA(media))
 	{
@@ -752,7 +734,7 @@ int vxext_fill_super(struct super_block *sb, void *data, int silent,
 	// zero to signal that the sectors per cluster are simply
 	// max_sectors / 65535 - therefore we check that case here
 	if(b->sec_per_clus != 0)
-    sbi->sec_per_clus = b->sec_per_clus
+    sbi->sec_per_clus = b->sec_per_clus;
   else
   {
     // calculate the sectors per cluster dynamically out of the total
