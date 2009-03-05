@@ -32,12 +32,9 @@ ifneq ($(KERNELRELEASE),)
 
   obj-m := vxext.o
 
-	vxext-y := cache.o \
-	           dir.o   \
-					   file.o  \
-					   inode.o \
-					   misc.o  \
-					   namei.o
+	vxext-y := cache.o dir.o fatent.o file.o inode.o misc.o
+
+	#EXTRA_CFLAGS := -DDEBUG
 
 else
 

@@ -1,7 +1,7 @@
-/* vim:set ts=2 nowrap: ****************************************************
+/* *************************************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2009 by Jens Langner <Jens.Langner@light-speed.de>
 
  This filesystem module is a reverse engineered implementation of the so
  called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
@@ -28,495 +28,350 @@
 
 ***************************************************************************/
 
-#include <linux/fs.h>
-#include <linux/buffer_head.h>
+/*
+ *  linux/fs/fat/cache.c
+ *
+ *  Written 1992,1993 by Werner Almesberger
+ *
+ *  Mar 1999. AV. Changed cache, so that it uses the starting cluster instead
+ *	of inode number.
+ *  May 1999. AV. Fixed the bogosity with FAT32 (read "FAT28"). Fscking lusers.
+ */
 
 #include "vxext_fs.h"
 
-int __vxext_access(struct super_block *sb, int nr, int new_value)
+#include <linux/fs.h>
+#include <linux/msdos_fs.h>
+#include <linux/buffer_head.h>
+
+/* this must be > 0. */
+#define FAT_MAX_CACHE	8
+
+struct fat_cache {
+	struct list_head cache_list;
+	int nr_contig;	/* number of contiguous clusters */
+	int fcluster;	/* cluster number in the file. */
+	int dcluster;	/* cluster number on disk. */
+};
+
+struct fat_cache_id {
+	unsigned int id;
+	int nr_contig;
+	int fcluster;
+	int dcluster;
+};
+
+static inline int fat_max_cache(struct inode *inode)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
-	struct buffer_head *bh, *bh2, *c_bh, *c_bh2;
-	unsigned char *p_first, *p_last;
-	int copy, first, last, next, b;
+	return FAT_MAX_CACHE;
+}
 
-	first = last = nr*2;
-	b = sbi->fat_start + (first >> sb->s_blocksize_bits);
+static struct kmem_cache *fat_cache_cachep;
 
-	if(!(bh = sb_bread(sb, b)))
-	{
-		printk(KERN_ERR "VXEXT: bread(block %d) in vxext_access failed\n", b);
-		
-		return -EIO;
-	}
+static void init_once(void *foo)
+{
+	struct fat_cache *cache = (struct fat_cache *)foo;
 
-	if((first >> sb->s_blocksize_bits) == (last >> sb->s_blocksize_bits))
-	{
-		bh2 = bh;
-	}
-	else
-	{
-		if(!(bh2 = sb_bread(sb, b + 1)))
-		{
-			brelse(bh);
-			printk(KERN_ERR "VXEXT: bread(block %d) in vxext_access failed\n",
-						 b + 1);
+	INIT_LIST_HEAD(&cache->cache_list);
+}
 
-			return -EIO;
-		}
-	}
+int __init fat_cache_init(void)
+{
+	fat_cache_cachep = kmem_cache_create("vxext_fat_cache",
+				sizeof(struct fat_cache),
+				0, SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD,
+				init_once);
+	if (fat_cache_cachep == NULL)
+		return -ENOMEM;
+	return 0;
+}
 
-	p_first = p_last = NULL; // GCC needs that stuff
-	next = CF_LE_W(((__u16 *) bh->b_data)[(first & (sb->s_blocksize - 1)) >> 1]);
+void fat_cache_destroy(void)
+{
+	kmem_cache_destroy(fat_cache_cachep);
+}
 
-	if(new_value != -1) 
-	{
-		((__u16 *)bh->b_data)[(first & (sb->s_blocksize - 1)) >> 1] = CT_LE_W(new_value);
-		mark_buffer_dirty(bh);
+static inline struct fat_cache *fat_cache_alloc(struct inode *inode)
+{
+	return kmem_cache_alloc(fat_cache_cachep, GFP_NOFS);
+}
 
-		for(copy = 1; copy < sbi->fats; copy++)
-		{
-			b = sbi->fat_start + (first >> sb->s_blocksize_bits)
-				+ sbi->fat_length * copy;
+static inline void fat_cache_free(struct fat_cache *cache)
+{
+	BUG_ON(!list_empty(&cache->cache_list));
+	kmem_cache_free(fat_cache_cachep, cache);
+}
 
-			if(!(c_bh = sb_bread(sb, b)))
+static inline void fat_cache_update_lru(struct inode *inode,
+					struct fat_cache *cache)
+{
+	if (MSDOS_I(inode)->cache_lru.next != &cache->cache_list)
+		list_move(&cache->cache_list, &MSDOS_I(inode)->cache_lru);
+}
+
+static int fat_cache_lookup(struct inode *inode, int fclus,
+			    struct fat_cache_id *cid,
+			    int *cached_fclus, int *cached_dclus)
+{
+	static struct fat_cache nohit = { .fcluster = 0, };
+
+	struct fat_cache *hit = &nohit, *p;
+	int offset = -1;
+
+	spin_lock(&MSDOS_I(inode)->cache_lru_lock);
+	list_for_each_entry(p, &MSDOS_I(inode)->cache_lru, cache_list) {
+		/* Find the cache of "fclus" or nearest cache. */
+		if (p->fcluster <= fclus && hit->fcluster < p->fcluster) {
+			hit = p;
+			if ((hit->fcluster + hit->nr_contig) < fclus) {
+				offset = hit->nr_contig;
+			} else {
+				offset = fclus - hit->fcluster;
 				break;
-			
-			if(bh != bh2)
-			{
-				if(!(c_bh2 = sb_bread(sb, b+1)))
-				{
-					brelse(c_bh);
-					break;
-				}
-
-				memcpy(c_bh2->b_data, bh2->b_data, sb->s_blocksize);
-				mark_buffer_dirty(c_bh2);
-				brelse(c_bh2);
 			}
-
-			memcpy(c_bh->b_data, bh->b_data, sb->s_blocksize);
-			mark_buffer_dirty(c_bh);
-			brelse(c_bh);
 		}
 	}
+	if (hit != &nohit) {
+		fat_cache_update_lru(inode, hit);
 
-	brelse(bh);
-	
-	if(bh != bh2)
-		brelse(bh2);
-	
-	return next;
-}
-
-/* 
- * Returns the this'th FAT entry, -1 if it is an end-of-file entry. If
- * new_value is != -1, that FAT entry is replaced by it.
- */
-int vxext_access(struct super_block *sb, int nr, int new_value)
-{
-	int next;
-
-	next = -EIO;
-	if(nr < 2 || VXEXT_SB(sb)->clusters + 2 <= nr)
-	{
-		vxext_fs_panic(sb, "invalid access to FAT (entry 0x%08x)", nr);
-		goto out;
+		cid->id = MSDOS_I(inode)->cache_valid_id;
+		cid->nr_contig = hit->nr_contig;
+		cid->fcluster = hit->fcluster;
+		cid->dcluster = hit->dcluster;
+		*cached_fclus = cid->fcluster + offset;
+		*cached_dclus = cid->dcluster + offset;
 	}
+	spin_unlock(&MSDOS_I(inode)->cache_lru_lock);
 
-	if(new_value == FAT_ENT_EOF)
-		new_value = EOF_FAT16;
-
-	next = __vxext_access(sb, nr, new_value);
-	if(next < 0)
-		goto out;
-	
-	if(next >= BAD_FAT16)
-		next = FAT_ENT_EOF;
-
-out:
-	return next;
+	return offset;
 }
 
-void vxext_cache_init(struct super_block *sb)
+static struct fat_cache *fat_cache_merge(struct inode *inode,
+					 struct fat_cache_id *new)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
-	int count;
+	struct fat_cache *p;
 
-	spin_lock_init(&sbi->cache_lock);
-
-	for(count = 0; count < FAT_CACHE_NR - 1; count++)
-	{
-		sbi->cache_array[count].start_cluster = 0;
-		sbi->cache_array[count].next = &sbi->cache_array[count + 1];
+	list_for_each_entry(p, &MSDOS_I(inode)->cache_lru, cache_list) {
+		/* Find the same part as "new" in cluster-chain. */
+		if (p->fcluster == new->fcluster) {
+			BUG_ON(p->dcluster != new->dcluster);
+			if (new->nr_contig > p->nr_contig)
+				p->nr_contig = new->nr_contig;
+			return p;
+		}
 	}
-
-	sbi->cache_array[count].start_cluster = 0;
-	sbi->cache_array[count].next = NULL;
-	sbi->cache = sbi->cache_array;
+	return NULL;
 }
 
-void vxext_cache_lookup(struct inode *inode, int cluster, int *f_clu, int *d_clu)
+static void fat_cache_add(struct inode *inode, struct fat_cache_id *new)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
-	struct vxext_cache *walk;
-	int first;
+	struct fat_cache *cache, *tmp;
 
-	BUG_ON(cluster == 0);
-	
-	first = VXEXT_I(inode)->i_start;
-	if(!first)
+	if (new->fcluster == -1) /* dummy cache */
 		return;
 
-	spin_lock(&sbi->cache_lock);
+	spin_lock(&MSDOS_I(inode)->cache_lru_lock);
+	if (new->id != FAT_CACHE_VALID &&
+	    new->id != MSDOS_I(inode)->cache_valid_id)
+		goto out;	/* this cache was invalidated */
 
-	if(VXEXT_I(inode)->disk_cluster &&
-	   VXEXT_I(inode)->file_cluster <= cluster)
-  {
-		*d_clu = VXEXT_I(inode)->disk_cluster;
-		*f_clu = VXEXT_I(inode)->file_cluster;
-	}
+	cache = fat_cache_merge(inode, new);
+	if (cache == NULL) {
+		if (MSDOS_I(inode)->nr_caches < fat_max_cache(inode)) {
+			MSDOS_I(inode)->nr_caches++;
+			spin_unlock(&MSDOS_I(inode)->cache_lru_lock);
 
-	for(walk = sbi->cache; walk; walk = walk->next)
-	{
-		if(walk->start_cluster == first
-		    && walk->file_cluster <= cluster
-		    && walk->file_cluster > *f_clu)
-		{
-			*d_clu = walk->disk_cluster;
-			*f_clu = walk->file_cluster;
-
-			#ifdef DEBUG
-			printk("cache hit: %d (%d)\n", *f_clu, *d_clu);
-			#endif
-			
-			if(*f_clu == cluster)
-				goto out;
+			tmp = fat_cache_alloc(inode);
+			spin_lock(&MSDOS_I(inode)->cache_lru_lock);
+			cache = fat_cache_merge(inode, new);
+			if (cache != NULL) {
+				MSDOS_I(inode)->nr_caches--;
+				fat_cache_free(tmp);
+				goto out_update_lru;
+			}
+			cache = tmp;
+		} else {
+			struct list_head *p = MSDOS_I(inode)->cache_lru.prev;
+			cache = list_entry(p, struct fat_cache, cache_list);
 		}
+		cache->fcluster = new->fcluster;
+		cache->dcluster = new->dcluster;
+		cache->nr_contig = new->nr_contig;
 	}
-
-	#ifdef DEBUG
-	printk("cache miss\n");
-	#endif
-
+out_update_lru:
+	fat_cache_update_lru(inode, cache);
 out:
-	spin_unlock(&sbi->cache_lock);
+	spin_unlock(&MSDOS_I(inode)->cache_lru_lock);
 }
-
-#ifdef DEBUG
-static void list_cache(struct super_block *sb)
-{
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
-	struct vxext_cache *walk;
-
-	for(walk = sbi->cache; walk; walk = walk->next)
-	{
-		if(walk->start_cluster)
-			printk("<%s,%d>(%d,%d) ", sb->s_id,
-			       walk->start_cluster, walk->file_cluster,
-			       walk->disk_cluster);
-		else
-			printk("-- ");
-	}
-	printk("\n");
-}
-#endif
 
 /*
  * Cache invalidation occurs rarely, thus the LRU chain is not updated. It
  * fixes itself after a while.
  */
-static void __vxext_cache_inval_inode(struct inode *inode)
+static void __fat_cache_inval_inode(struct inode *inode)
 {
-	struct vxext_cache *walk;
-	int first = VXEXT_I(inode)->i_start;
+	struct msdos_inode_info *i = MSDOS_I(inode);
+	struct fat_cache *cache;
 
-	VXEXT_I(inode)->file_cluster = VXEXT_I(inode)->disk_cluster = 0;
-	
-	for(walk = VXEXT_SB(inode->i_sb)->cache; walk; walk = walk->next)
-	{
-		if(walk->start_cluster == first)
-		{
-			walk->start_cluster = 0;
-		}
+	while (!list_empty(&i->cache_lru)) {
+		cache = list_entry(i->cache_lru.next, struct fat_cache, cache_list);
+		list_del_init(&cache->cache_list);
+		i->nr_caches--;
+		fat_cache_free(cache);
 	}
+	/* Update. The copy of caches before this id is discarded. */
+	i->cache_valid_id++;
+	if (i->cache_valid_id == FAT_CACHE_VALID)
+		i->cache_valid_id++;
 }
 
-void vxext_cache_inval_inode(struct inode *inode)
+void fat_cache_inval_inode(struct inode *inode)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
-	
-	spin_lock(&sbi->cache_lock);
-	__vxext_cache_inval_inode(inode);
-	spin_unlock(&sbi->cache_lock);
+	spin_lock(&MSDOS_I(inode)->cache_lru_lock);
+	__fat_cache_inval_inode(inode);
+	spin_unlock(&MSDOS_I(inode)->cache_lru_lock);
 }
 
-void vxext_cache_add(struct inode *inode, int f_clu, int d_clu)
+static inline int cache_contiguous(struct fat_cache_id *cid, int dclus)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
-	struct vxext_cache *walk, *last;
-	int first, prev_f_clu, prev_d_clu;
-
-	if (f_clu == 0)
-		return;
-
-	first = VXEXT_I(inode)->i_start;
-	if (!first)
-		return;
-
-	last = NULL;
-	spin_lock(&sbi->cache_lock);
-
-	if(VXEXT_I(inode)->file_cluster == f_clu)
-	{
-		goto out;
-	}
-	else
-	{
-		prev_f_clu = VXEXT_I(inode)->file_cluster;
-		prev_d_clu = VXEXT_I(inode)->disk_cluster;
-		VXEXT_I(inode)->file_cluster = f_clu;
-		VXEXT_I(inode)->disk_cluster = d_clu;
-
-		if(prev_f_clu == 0)
-			goto out;
-		
-		f_clu = prev_f_clu;
-		d_clu = prev_d_clu;
-	}
-	
-	for(walk = sbi->cache; walk->next; walk = (last = walk)->next)
-	{
-		if(walk->start_cluster == first &&
-		   walk->file_cluster == f_clu)
-		{
-			if(walk->disk_cluster != d_clu)
-			{
-				printk(KERN_ERR "VXEXT: cache corruption "
-				       "(i_pos %lld)\n", VXEXT_I(inode)->i_pos);
-				__vxext_cache_inval_inode(inode);
-
-				goto out;
-			}
-
-			if(last == NULL)
-				goto out;
-
-			// update LRU
-			last->next = walk->next;
-			walk->next = sbi->cache;
-			sbi->cache = walk;
-			#ifdef DEBUG
-			list_cache();
-			#endif
-			
-			goto out;
-		}
-	}
-
-	walk->start_cluster = first;
-	walk->file_cluster = f_clu;
-	walk->disk_cluster = d_clu;
-	last->next = NULL;
-	walk->next = sbi->cache;
-	sbi->cache = walk;
-	#ifdef DEBUG
-	list_cache();
-	#endif
-out:
-	spin_unlock(&sbi->cache_lock);
+	cid->nr_contig++;
+	return ((cid->dcluster + cid->nr_contig) == dclus);
 }
 
-int vxext_get_cluster(struct inode *inode, int cluster, int *fclus, int *dclus)
+static inline void cache_init(struct fat_cache_id *cid, int fclus, int dclus)
+{
+	cid->id = FAT_CACHE_VALID;
+	cid->fcluster = fclus;
+	cid->dcluster = dclus;
+	cid->nr_contig = 0;
+}
+
+int fat_get_cluster(struct inode *inode, int cluster, int *fclus, int *dclus)
 {
 	struct super_block *sb = inode->i_sb;
-	int limit = ((unsigned long)sb->s_maxbytes) / VXEXT_SB(sb)->cluster_size;
+   #ifndef VXEXT_FS
+	const int limit = sb->s_maxbytes >> MSDOS_SB(sb)->cluster_bits;
+   #else
+   int limit = ((unsigned long)sb->s_maxbytes) / MSDOS_SB(sb)->cluster_size;
+   #endif
+	struct fat_entry fatent;
+	struct fat_cache_id cid;
 	int nr;
 
-	// vxworks uses cluster sizes not bound to base 2 so lets see if we
-	// need to add a cluster or not.
-	if(((unsigned long)sb->s_maxbytes) % VXEXT_SB(sb)->cluster_size)
-		limit++;
-	
-	BUG_ON(VXEXT_I(inode)->i_start == 0);
-	
+   #ifdef VXEXT_FS
+   // vxworks uses cluster sizes not bound to base 2 so lets see if we
+   // need to add a cluster or not.
+   if(((unsigned long)sb->s_maxbytes) % MSDOS_SB(sb)->cluster_size)
+      limit++;
+   #endif
+
+	BUG_ON(MSDOS_I(inode)->i_start == 0);
+
 	*fclus = 0;
-	*dclus = VXEXT_I(inode)->i_start;
+	*dclus = MSDOS_I(inode)->i_start;
 	if (cluster == 0)
 		return 0;
 
-	vxext_cache_lookup(inode, cluster, fclus, dclus);
-	while(*fclus < cluster)
-	{
-		// prevent the infinite loop of cluster chain
-		if(*fclus > limit)
-		{
-			vxext_fs_panic(sb, "%s: detected the cluster chain loop"
-				     " (i_pos %lld)", __FUNCTION__,
-				     VXEXT_I(inode)->i_pos);
-			return -EIO;
-		}
-
-		nr = vxext_access(sb, *dclus, -1);
-		if(nr < 0)
-		{
- 			return nr;
-		}
-		else if(nr == FAT_ENT_FREE)
-		{
-			vxext_fs_panic(sb, "%s: invalid cluster chain"
-				     " (i_pos %lld)", __FUNCTION__,
-				     VXEXT_I(inode)->i_pos);
-			return -EIO;
-		}
-		else if(nr == FAT_ENT_EOF)
-		{
-			vxext_cache_add(inode, *fclus, *dclus);
-			return FAT_ENT_EOF;
-		}
-
-		(*fclus)++;
-		*dclus = nr;
+	if (fat_cache_lookup(inode, cluster, &cid, fclus, dclus) < 0) {
+		/*
+		 * dummy, always not contiguous
+		 * This is reinitialized by cache_init(), later.
+		 */
+		cache_init(&cid, -1, -1);
 	}
 
-	vxext_cache_add(inode, *fclus, *dclus);
-	return 0;
+	fatent_init(&fatent);
+	while (*fclus < cluster) {
+		/* prevent the infinite loop of cluster chain */
+		if (*fclus > limit) {
+			fat_fs_panic(sb, "%s: detected the cluster chain loop"
+				     " (i_pos %lld)", __func__,
+				     MSDOS_I(inode)->i_pos);
+			nr = -EIO;
+			goto out;
+		}
+
+		nr = fat_ent_read(inode, &fatent, *dclus);
+		if (nr < 0)
+			goto out;
+		else if (nr == FAT_ENT_FREE) {
+			fat_fs_panic(sb, "%s: invalid cluster chain"
+				     " (i_pos %lld)", __func__,
+				     MSDOS_I(inode)->i_pos);
+			nr = -EIO;
+			goto out;
+		} else if (nr == FAT_ENT_EOF) {
+			fat_cache_add(inode, &cid);
+			goto out;
+		}
+		(*fclus)++;
+		*dclus = nr;
+		if (!cache_contiguous(&cid, *dclus))
+			cache_init(&cid, *fclus, *dclus);
+	}
+	nr = 0;
+	fat_cache_add(inode, &cid);
+out:
+	fatent_brelse(&fatent);
+	return nr;
 }
 
-static int vxext_bmap_cluster(struct inode *inode, int cluster)
+static int fat_bmap_cluster(struct inode *inode, int cluster)
 {
 	struct super_block *sb = inode->i_sb;
 	int ret, fclus, dclus;
 
-	if(VXEXT_I(inode)->i_start == 0)
+	if (MSDOS_I(inode)->i_start == 0)
 		return 0;
 
-	ret = vxext_get_cluster(inode, cluster, &fclus, &dclus);
-
-	if(ret < 0)
-	{
+	ret = fat_get_cluster(inode, cluster, &fclus, &dclus);
+	if (ret < 0)
 		return ret;
-	}
-	else if(ret == FAT_ENT_EOF)
-	{
-		vxext_fs_panic(sb, "%s: request beyond EOF (i_pos %lld %ld)",
-			     __FUNCTION__, VXEXT_I(inode)->i_pos, cluster);
-
+	else if (ret == FAT_ENT_EOF) {
+		fat_fs_panic(sb, "%s: request beyond EOF (i_pos %lld)",
+			     __func__, MSDOS_I(inode)->i_pos);
 		return -EIO;
 	}
-	
 	return dclus;
 }
 
-int vxext_bmap(struct inode *inode, sector_t sector, sector_t *phys)
+int fat_bmap(struct inode *inode, sector_t sector, sector_t *phys,
+	     unsigned long *mapped_blocks)
 {
 	struct super_block *sb = inode->i_sb;
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 	sector_t last_block;
 	int cluster, offset;
 
 	*phys = 0;
-	if((inode->i_ino == VXEXT_ROOT_INO || (S_ISDIR(inode->i_mode) &&
-	    !VXEXT_I(inode)->i_start)))
-	{
-		if (sector < (sbi->dir_entries >> sbi->dir_per_block_bits))
+	*mapped_blocks = 0;
+	if ((sbi->fat_bits != 32) && (inode->i_ino == MSDOS_ROOT_INO)) {
+		if (sector < (sbi->dir_entries >> sbi->dir_per_block_bits)) {
 			*phys = sector + sbi->dir_start;
-
+			*mapped_blocks = 1;
+		}
 		return 0;
 	}
-
-	last_block = (VXEXT_I(inode)->mmu_private + (sb->s_blocksize - 1))
+	last_block = (MSDOS_I(inode)->mmu_private + (sb->s_blocksize - 1))
 		>> sb->s_blocksize_bits;
-
-	if(sector >= last_block)
+	if (sector >= last_block)
 		return 0;
 
-	cluster = ((unsigned long)sector) / sbi->sec_per_clus; 
-	offset  = ((unsigned long)sector) % sbi->sec_per_clus;
-	cluster = vxext_bmap_cluster(inode, cluster);
-
-	if(cluster < 0)
-	{
+   #ifdef VXEXT_FS
+	cluster = ((unsigned long)sector) / sbi->sec_per_clus;
+   offset  = ((unsigned long)sector) % sbi->sec_per_clus;
+   #else
+	cluster = sector >> (sbi->cluster_bits - sb->s_blocksize_bits);
+	offset  = sector & (sbi->sec_per_clus - 1);
+   #endif
+	cluster = fat_bmap_cluster(inode, cluster);
+	if (cluster < 0)
 		return cluster;
+	else if (cluster) {
+		*phys = fat_clus_to_blknr(sbi, cluster) + offset;
+		*mapped_blocks = sbi->sec_per_clus - offset;
+		if (*mapped_blocks > last_block - sector)
+			*mapped_blocks = last_block - sector;
 	}
-	else if (cluster) 
-	{
-		*phys = ((sector_t)cluster - 2) * sbi->sec_per_clus
-			+ sbi->data_start + offset;
-	}
-
 	return 0;
-}
-
-// Free all clusters after the skip'th cluster.
-int vxext_free(struct inode *inode, int skip)
-{
-	struct super_block *sb = inode->i_sb;
-	int nr, ret, fclus, dclus;
-
-	if(VXEXT_I(inode)->i_start == 0)
-		return 0;
-
-	if(skip)
-	{
-		ret = vxext_get_cluster(inode, skip - 1, &fclus, &dclus);
-		if (ret < 0)
-			return ret;
-		else if (ret == FAT_ENT_EOF)
-			return 0;
-
-		nr = vxext_access(sb, dclus, -1);
-		if (nr == FAT_ENT_EOF)
-		{
-			return 0;
-		}
-		else if (nr > 0)
-		{
-			// write a new EOF, and get the remaining cluster
-			// chain for freeing. 
-			nr = vxext_access(sb, dclus, FAT_ENT_EOF);
-		}
-
-		if(nr < 0)
-			return nr;
-
-		vxext_cache_inval_inode(inode);
-	}
-	else
-	{
-		vxext_cache_inval_inode(inode);
-
-		nr = VXEXT_I(inode)->i_start;
-		VXEXT_I(inode)->i_start = 0;
-		VXEXT_I(inode)->i_logstart = 0;
-		mark_inode_dirty(inode);
-	}
-
-	vxlock_fat(sb);
-	do
-	{
-		nr = vxext_access(sb, nr, FAT_ENT_FREE);
-		if(nr < 0)
-		{
-			goto error;
-		}
-		else if(nr == FAT_ENT_FREE)
-		{
-			vxext_fs_panic(sb, "%s: deleting beyond EOF (i_pos %lld)",
-				     __FUNCTION__, VXEXT_I(inode)->i_pos);
-			nr = -EIO;
-			goto error;
-		}
-
-		if(VXEXT_SB(sb)->free_clusters != -1)
-			VXEXT_SB(sb)->free_clusters++;
-		inode->i_blocks -= VXEXT_SB(sb)->cluster_size >> 9;
-	}
-	while (nr != FAT_ENT_EOF);
-
-	nr = 0;
-error:
-	vxunlock_fat(sb);
-
-	return nr;
 }

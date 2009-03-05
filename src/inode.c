@@ -1,7 +1,7 @@
-/* vim:set ts=2 nowrap: ****************************************************
+/* *************************************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004-2007 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2009 by Jens Langner <Jens.Langner@light-speed.de>
 
  This filesystem module is a reverse engineered implementation of the so
  called VXEXT1.0 extended DOS filesystem shipped with the VxWorks 5.2+
@@ -28,20 +28,222 @@
 
 ***************************************************************************/
 
+/*
+ *  linux/fs/fat/inode.c
+ *
+ *  Written 1992,1993 by Werner Almesberger
+ *  VFAT extensions by Gordon Chaffee, merged with msdos fs by Henrik Storner
+ *  Rewritten for the constant inumbers support by Al Viro
+ *
+ *  Fixes:
+ *
+ *	Max Cohan: Fixed invalid FSINFO offset when info_sector is 0
+ */
+
+#include "vxext_fs.h"
+
 #include <linux/module.h>
+#include <linux/init.h>
 #include <linux/time.h>
 #include <linux/slab.h>
 #include <linux/smp_lock.h>
 #include <linux/seq_file.h>
+#include <linux/msdos_fs.h>
 #include <linux/pagemap.h>
+#include <linux/mpage.h>
 #include <linux/buffer_head.h>
+#include <linux/exportfs.h>
 #include <linux/mount.h>
 #include <linux/vfs.h>
 #include <linux/parser.h>
-#include <linux/exportfs.h>
+#include <linux/uio.h>
+#include <linux/writeback.h>
+#include <linux/log2.h>
 #include <asm/unaligned.h>
 
-#include "vxext_fs.h"
+#ifndef CONFIG_FAT_DEFAULT_IOCHARSET
+/* if user don't select VFAT, this is undefined. */
+#define CONFIG_FAT_DEFAULT_IOCHARSET	""
+#endif
+
+static int fat_default_codepage = CONFIG_FAT_DEFAULT_CODEPAGE;
+static char fat_default_iocharset[] = CONFIG_FAT_DEFAULT_IOCHARSET;
+
+
+static int fat_add_cluster(struct inode *inode)
+{
+	int err, cluster;
+
+	err = fat_alloc_clusters(inode, &cluster, 1);
+	if (err)
+		return err;
+	/* FIXME: this cluster should be added after data of this
+	 * cluster is writed */
+	err = fat_chain_add(inode, cluster, 1);
+	if (err)
+		fat_free_clusters(inode, cluster);
+	return err;
+}
+
+static inline int __fat_get_block(struct inode *inode, sector_t iblock,
+				  unsigned long *max_blocks,
+				  struct buffer_head *bh_result, int create)
+{
+	struct super_block *sb = inode->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	unsigned long mapped_blocks;
+	sector_t phys;
+	int err, offset;
+
+	err = fat_bmap(inode, iblock, &phys, &mapped_blocks);
+	if (err)
+		return err;
+	if (phys) {
+		map_bh(bh_result, sb, phys);
+		*max_blocks = min(mapped_blocks, *max_blocks);
+		return 0;
+	}
+	if (!create)
+		return 0;
+
+	if (iblock != MSDOS_I(inode)->mmu_private >> sb->s_blocksize_bits) {
+		fat_fs_panic(sb, "corrupted file size (i_pos %lld, %lld)",
+			MSDOS_I(inode)->i_pos, MSDOS_I(inode)->mmu_private);
+		return -EIO;
+	}
+
+	offset = (unsigned long)iblock & (sbi->sec_per_clus - 1);
+	if (!offset) {
+		/* TODO: multiple cluster allocation would be desirable. */
+		err = fat_add_cluster(inode);
+		if (err)
+			return err;
+	}
+	/* available blocks on this cluster */
+	mapped_blocks = sbi->sec_per_clus - offset;
+
+	*max_blocks = min(mapped_blocks, *max_blocks);
+	MSDOS_I(inode)->mmu_private += *max_blocks << sb->s_blocksize_bits;
+
+	err = fat_bmap(inode, iblock, &phys, &mapped_blocks);
+	if (err)
+		return err;
+
+	BUG_ON(!phys);
+	BUG_ON(*max_blocks != mapped_blocks);
+	set_buffer_new(bh_result);
+	map_bh(bh_result, sb, phys);
+
+	return 0;
+}
+
+static int fat_get_block(struct inode *inode, sector_t iblock,
+			 struct buffer_head *bh_result, int create)
+{
+	struct super_block *sb = inode->i_sb;
+	unsigned long max_blocks = bh_result->b_size >> inode->i_blkbits;
+	int err;
+
+	err = __fat_get_block(inode, iblock, &max_blocks, bh_result, create);
+	if (err)
+		return err;
+	bh_result->b_size = max_blocks << sb->s_blocksize_bits;
+	return 0;
+}
+
+static int fat_writepage(struct page *page, struct writeback_control *wbc)
+{
+	return block_write_full_page(page, fat_get_block, wbc);
+}
+
+static int fat_writepages(struct address_space *mapping,
+			  struct writeback_control *wbc)
+{
+	return mpage_writepages(mapping, wbc, fat_get_block);
+}
+
+static int fat_readpage(struct file *file, struct page *page)
+{
+	return mpage_readpage(page, fat_get_block);
+}
+
+static int fat_readpages(struct file *file, struct address_space *mapping,
+			 struct list_head *pages, unsigned nr_pages)
+{
+	return mpage_readpages(mapping, pages, nr_pages, fat_get_block);
+}
+
+static int fat_write_begin(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned flags,
+			struct page **pagep, void **fsdata)
+{
+	*pagep = NULL;
+	return cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
+				fat_get_block,
+				&MSDOS_I(mapping->host)->mmu_private);
+}
+
+static int fat_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *pagep, void *fsdata)
+{
+	struct inode *inode = mapping->host;
+	int err;
+	err = generic_write_end(file, mapping, pos, len, copied, pagep, fsdata);
+	if (!(err < 0) && !(MSDOS_I(inode)->i_attrs & ATTR_ARCH)) {
+		inode->i_mtime = inode->i_ctime = CURRENT_TIME_SEC;
+		MSDOS_I(inode)->i_attrs |= ATTR_ARCH;
+		mark_inode_dirty(inode);
+	}
+	return err;
+}
+
+static ssize_t fat_direct_IO(int rw, struct kiocb *iocb,
+			     const struct iovec *iov,
+			     loff_t offset, unsigned long nr_segs)
+{
+	struct file *file = iocb->ki_filp;
+	struct inode *inode = file->f_mapping->host;
+
+	if (rw == WRITE) {
+		/*
+		 * FIXME: blockdev_direct_IO() doesn't use ->prepare_write(),
+		 * so we need to update the ->mmu_private to block boundary.
+		 *
+		 * But we must fill the remaining area or hole by nul for
+		 * updating ->mmu_private.
+		 *
+		 * Return 0, and fallback to normal buffered write.
+		 */
+		loff_t size = offset + iov_length(iov, nr_segs);
+		if (MSDOS_I(inode)->mmu_private < size)
+			return 0;
+	}
+
+	/*
+	 * FAT need to use the DIO_LOCKING for avoiding the race
+	 * condition of fat_get_block() and ->truncate().
+	 */
+	return blockdev_direct_IO(rw, iocb, inode, inode->i_sb->s_bdev, iov,
+				  offset, nr_segs, fat_get_block, NULL);
+}
+
+static sector_t _fat_bmap(struct address_space *mapping, sector_t block)
+{
+	return generic_block_bmap(mapping, block, fat_get_block);
+}
+
+static const struct address_space_operations fat_aops = {
+	.readpage	= fat_readpage,
+	.readpages	= fat_readpages,
+	.writepage	= fat_writepage,
+	.writepages	= fat_writepages,
+	.sync_page	= block_sync_page,
+	.write_begin	= fat_write_begin,
+	.write_end	= fat_write_end,
+	.direct_IO	= fat_direct_IO,
+	.bmap		= _fat_bmap
+};
 
 /*
  * New FAT inode stuff. We do the following:
@@ -57,308 +259,438 @@
  *		2. rename() unhashes the F-d-c entry and rehashes it in
  *			a new place.
  *		3. unlink() and rmdir() unhash F-d-c entry.
- *		4. vxext_write_inode() checks whether the thing is unhashed.
+ *		4. fat_write_inode() checks whether the thing is unhashed.
  *			If it is we silently return. If it isn't we do bread(),
  *			check if the location is still valid and retry if it
  *			isn't. Otherwise we do changes.
  *		5. Spinlock is used to protect hash/unhash/location check/lookup
- *		6. vxext_clear_inode() unhashes the F-d-c entry.
+ *		6. fat_clear_inode() unhashes the F-d-c entry.
  *		7. lookup() and readdir() do igrab() if they find a F-d-c entry
  *			and consider negative result as cache miss.
  */
 
-#define FAT_HASH_BITS	8
-#define FAT_HASH_SIZE	(1UL << FAT_HASH_BITS)
-#define FAT_HASH_MASK	(FAT_HASH_SIZE-1)
-static struct list_head vxext_inode_hashtable[FAT_HASH_SIZE];
-spinlock_t vxext_inode_lock = SPIN_LOCK_UNLOCKED;
-
-void vxext_hash_init(void)
+static void fat_hash_init(struct super_block *sb)
 {
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 	int i;
 
-	for(i = 0; i < FAT_HASH_SIZE; i++)
-	{
-		INIT_LIST_HEAD(&vxext_inode_hashtable[i]);
-	}
+	spin_lock_init(&sbi->inode_hash_lock);
+	for (i = 0; i < FAT_HASH_SIZE; i++)
+		INIT_HLIST_HEAD(&sbi->inode_hashtable[i]);
 }
 
-static inline unsigned long vxext_hash(struct super_block *sb, loff_t i_pos)
+static inline unsigned long fat_hash(struct super_block *sb, loff_t i_pos)
 {
 	unsigned long tmp = (unsigned long)i_pos | (unsigned long) sb;
 	tmp = tmp + (tmp >> FAT_HASH_BITS) + (tmp >> FAT_HASH_BITS * 2);
 	return tmp & FAT_HASH_MASK;
 }
 
-void vxext_attach(struct inode *inode, loff_t i_pos)
+void fat_attach(struct inode *inode, loff_t i_pos)
 {
-	spin_lock(&vxext_inode_lock);
-	VXEXT_I(inode)->i_pos = i_pos;
-	list_add(&VXEXT_I(inode)->i_fat_hash,
-		vxext_inode_hashtable + vxext_hash(inode->i_sb, i_pos));
-	spin_unlock(&vxext_inode_lock);
+	struct super_block *sb = inode->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+
+	spin_lock(&sbi->inode_hash_lock);
+	MSDOS_I(inode)->i_pos = i_pos;
+	hlist_add_head(&MSDOS_I(inode)->i_fat_hash,
+			sbi->inode_hashtable + fat_hash(sb, i_pos));
+	spin_unlock(&sbi->inode_hash_lock);
 }
 
-void vxext_detach(struct inode *inode)
+#ifndef VXEXT_FS
+EXPORT_SYMBOL_GPL(fat_attach);
+#endif
+
+void fat_detach(struct inode *inode)
 {
-	spin_lock(&vxext_inode_lock);
-	VXEXT_I(inode)->i_pos = 0;
-	list_del_init(&VXEXT_I(inode)->i_fat_hash);
-	spin_unlock(&vxext_inode_lock);
+	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
+	spin_lock(&sbi->inode_hash_lock);
+	MSDOS_I(inode)->i_pos = 0;
+	hlist_del_init(&MSDOS_I(inode)->i_fat_hash);
+	spin_unlock(&sbi->inode_hash_lock);
 }
 
-struct inode *vxext_iget(struct super_block *sb, loff_t i_pos)
+#ifndef VXEXT_FS
+EXPORT_SYMBOL_GPL(fat_detach);
+#endif
+
+struct inode *fat_iget(struct super_block *sb, loff_t i_pos)
 {
-	struct list_head *p;
-	struct list_head *walk = NULL;
-	struct vxext_inode_info *i;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	struct hlist_head *head = sbi->inode_hashtable + fat_hash(sb, i_pos);
+	struct hlist_node *_p;
+	struct msdos_inode_info *i;
 	struct inode *inode = NULL;
 
-	p = vxext_inode_hashtable + vxext_hash(sb, i_pos);
-
-	spin_lock(&vxext_inode_lock);
-
-	list_for_each(walk, p)
-	{
-		i = list_entry(walk, struct vxext_inode_info, i_fat_hash);
-
-		if(i->vfs_inode.i_sb != sb || i->i_pos != i_pos)
+	spin_lock(&sbi->inode_hash_lock);
+	hlist_for_each_entry(i, _p, head, i_fat_hash) {
+		BUG_ON(i->vfs_inode.i_sb != sb);
+		if (i->i_pos != i_pos)
 			continue;
-
 		inode = igrab(&i->vfs_inode);
-		if(inode)
+		if (inode)
 			break;
 	}
-
-	spin_unlock(&vxext_inode_lock);
+	spin_unlock(&sbi->inode_hash_lock);
 	return inode;
 }
 
-static int vxext_fill_inode(struct inode *inode, struct vxext_dir_entry *de);
+static int is_exec(unsigned char *extension)
+{
+	unsigned char *exe_extensions = "EXECOMBAT", *walk;
 
-struct inode *vxext_build_inode(struct super_block *sb,
-																struct vxext_dir_entry *de,
-																loff_t i_pos, int *res)
+	for (walk = exe_extensions; *walk; walk += 3)
+		if (!strncmp(extension, walk, 3))
+			return 1;
+	return 0;
+}
+
+static int fat_calc_dir_size(struct inode *inode)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
+	int ret, fclus, dclus;
+
+	inode->i_size = 0;
+	if (MSDOS_I(inode)->i_start == 0)
+		return 0;
+
+	ret = fat_get_cluster(inode, FAT_ENT_EOF, &fclus, &dclus);
+	if (ret < 0)
+		return ret;
+
+   #ifdef VXEXT_FS
+   inode->i_size = (fclus + 1) * sbi->cluster_size;
+   #else
+	inode->i_size = (fclus + 1) << sbi->cluster_bits;
+   #endif
+
+	return 0;
+}
+
+/* doesn't deal with root inode */
+static int fat_fill_inode(struct inode *inode, struct msdos_dir_entry *de)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
+	int error;
+
+	MSDOS_I(inode)->i_pos = 0;
+	inode->i_uid = sbi->options.fs_uid;
+	inode->i_gid = sbi->options.fs_gid;
+	inode->i_version++;
+	inode->i_generation = get_seconds();
+
+	if ((de->attr & ATTR_DIR) && !IS_FREE(de->name)) {
+		inode->i_generation &= ~1;
+		inode->i_mode = MSDOS_MKMODE(de->attr,
+			S_IRWXUGO & ~sbi->options.fs_dmask) | S_IFDIR;
+		inode->i_op = sbi->dir_ops;
+		inode->i_fop = &fat_dir_operations;
+
+		MSDOS_I(inode)->i_start = le16_to_cpu(de->start);
+      #ifndef VXEXT_FS
+		if (sbi->fat_bits == 32)
+			MSDOS_I(inode)->i_start |= (le16_to_cpu(de->starthi) << 16);
+      #endif
+
+		MSDOS_I(inode)->i_logstart = MSDOS_I(inode)->i_start;
+		error = fat_calc_dir_size(inode);
+		if (error < 0)
+			return error;
+		MSDOS_I(inode)->mmu_private = inode->i_size;
+
+		inode->i_nlink = fat_subdirs(inode);
+	} else { /* not a directory */
+		inode->i_generation |= 1;
+		inode->i_mode = MSDOS_MKMODE(de->attr,
+		    ((sbi->options.showexec && !is_exec(de->name + 8))
+			? S_IRUGO|S_IWUGO : S_IRWXUGO)
+		    & ~sbi->options.fs_fmask) | S_IFREG;
+		MSDOS_I(inode)->i_start = le16_to_cpu(de->start);
+      #ifndef VXEXT_FS
+		if (sbi->fat_bits == 32)
+			MSDOS_I(inode)->i_start |= (le16_to_cpu(de->starthi) << 16);
+      #endif
+
+		MSDOS_I(inode)->i_logstart = MSDOS_I(inode)->i_start;
+		inode->i_size = le32_to_cpu(de->size);
+		inode->i_op = &fat_file_inode_operations;
+		inode->i_fop = &fat_file_operations;
+		inode->i_mapping->a_ops = &fat_aops;
+		MSDOS_I(inode)->mmu_private = inode->i_size;
+	}
+	if (de->attr & ATTR_SYS) {
+		if (sbi->options.sys_immutable)
+			inode->i_flags |= S_IMMUTABLE;
+	}
+	MSDOS_I(inode)->i_attrs = de->attr & ATTR_UNUSED;
+	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
+			   & ~((loff_t)sbi->cluster_size - 1)) >> 9;
+	inode->i_mtime.tv_sec =
+		date_dos2unix(le16_to_cpu(de->time), le16_to_cpu(de->date),
+			      sbi->options.tz_utc);
+	inode->i_mtime.tv_nsec = 0;
+   #ifndef VXEXT_FS
+	if (sbi->options.isvfat) {
+		int secs = de->ctime_cs / 100;
+		int csecs = de->ctime_cs % 100;
+		inode->i_ctime.tv_sec  =
+			date_dos2unix(le16_to_cpu(de->ctime),
+				      le16_to_cpu(de->cdate),
+				      sbi->options.tz_utc) + secs;
+		inode->i_ctime.tv_nsec = csecs * 10000000;
+		inode->i_atime.tv_sec =
+			date_dos2unix(0, le16_to_cpu(de->adate),
+				      sbi->options.tz_utc);
+		inode->i_atime.tv_nsec = 0;
+	} else
+   #endif
+		inode->i_ctime = inode->i_atime = inode->i_mtime;
+
+	return 0;
+}
+
+struct inode *fat_build_inode(struct super_block *sb,
+			struct msdos_dir_entry *de, loff_t i_pos)
 {
 	struct inode *inode;
-	*res = 0;
-	inode = vxext_iget(sb, i_pos);
-	if(inode)
-		goto out;
+	int err;
 
+	inode = fat_iget(sb, i_pos);
+	if (inode)
+		goto out;
 	inode = new_inode(sb);
-	*res = -ENOMEM;
-	if(!inode)
-		goto out;
-
-	inode->i_ino = iunique(sb, VXEXT_ROOT_INO);
-	inode->i_version = 1;
-	*res = vxext_fill_inode(inode, de);
-	if(*res < 0)
-	{
-		iput(inode);
-		inode = NULL;
+	if (!inode) {
+		inode = ERR_PTR(-ENOMEM);
 		goto out;
 	}
-
-	vxext_attach(inode, i_pos);
+	inode->i_ino = iunique(sb, MSDOS_ROOT_INO);
+	inode->i_version = 1;
+	err = fat_fill_inode(inode, de);
+	if (err) {
+		iput(inode);
+		inode = ERR_PTR(err);
+		goto out;
+	}
+	fat_attach(inode, i_pos);
 	insert_inode_hash(inode);
-
 out:
 	return inode;
 }
 
-void vxext_delete_inode(struct inode *inode)
-{
-	if(!is_bad_inode(inode))
-	{
-		inode->i_size = 0;
-		vxext_truncate(inode);
-	}
+#ifndef VXEXT_FS
+EXPORT_SYMBOL_GPL(fat_build_inode);
+#endif
 
+static void fat_delete_inode(struct inode *inode)
+{
+	truncate_inode_pages(&inode->i_data, 0);
+	inode->i_size = 0;
+	fat_truncate(inode);
 	clear_inode(inode);
 }
 
-void vxext_clear_inode(struct inode *inode)
+static void fat_clear_inode(struct inode *inode)
 {
-	if(is_bad_inode(inode))
-		return;
+	struct super_block *sb = inode->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 
-	lock_kernel();
-	spin_lock(&vxext_inode_lock);
-	vxext_cache_inval_inode(inode);
-	list_del_init(&VXEXT_I(inode)->i_fat_hash);
-	spin_unlock(&vxext_inode_lock);
-	unlock_kernel();
+	spin_lock(&sbi->inode_hash_lock);
+	fat_cache_inval_inode(inode);
+	hlist_del_init(&MSDOS_I(inode)->i_fat_hash);
+	spin_unlock(&sbi->inode_hash_lock);
 }
 
-void vxext_put_super(struct super_block *sb)
+static void fat_write_super(struct super_block *sb)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
+	sb->s_dirt = 0;
+
+	if (!(sb->s_flags & MS_RDONLY))
+		fat_clusters_flush(sb);
+}
+
+static void fat_put_super(struct super_block *sb)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+
+	if (sbi->nls_disk) {
+		unload_nls(sbi->nls_disk);
+		sbi->nls_disk = NULL;
+		sbi->options.codepage = fat_default_codepage;
+	}
+	if (sbi->nls_io) {
+		unload_nls(sbi->nls_io);
+		sbi->nls_io = NULL;
+	}
+	if (sbi->options.iocharset != fat_default_iocharset) {
+		kfree(sbi->options.iocharset);
+		sbi->options.iocharset = fat_default_iocharset;
+	}
+
 	sb->s_fs_info = NULL;
 	kfree(sbi);
 }
 
-static int vxext_show_options(struct seq_file *m, struct vfsmount *mnt)
+static struct kmem_cache *fat_inode_cachep;
+
+static struct inode *fat_alloc_inode(struct super_block *sb)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(mnt->mnt_sb);
-	struct vxext_mount_options *opts = &sbi->options;
+	struct msdos_inode_info *ei;
+	ei = kmem_cache_alloc(fat_inode_cachep, GFP_NOFS);
+	if (!ei)
+		return NULL;
+	return &ei->vfs_inode;
+}
 
-	if(opts->fs_uid != 0)
-		seq_printf(m, ",uid=%u", opts->fs_uid);
+static void fat_destroy_inode(struct inode *inode)
+{
+	kmem_cache_free(fat_inode_cachep, MSDOS_I(inode));
+}
 
-	if(opts->fs_gid != 0)
-		seq_printf(m, ",gid=%u", opts->fs_gid);
+static void init_once(void *foo)
+{
+	struct msdos_inode_info *ei = (struct msdos_inode_info *)foo;
 
-	seq_printf(m, ",fmask=%04o", opts->fs_fmask);
-	seq_printf(m, ",dmask=%04o", opts->fs_dmask);
+	spin_lock_init(&ei->cache_lru_lock);
+	ei->nr_caches = 0;
+	ei->cache_valid_id = FAT_CACHE_VALID + 1;
+	INIT_LIST_HEAD(&ei->cache_lru);
+	INIT_HLIST_NODE(&ei->i_fat_hash);
+	inode_init_once(&ei->vfs_inode);
+}
 
-	if(opts->quiet)
-		seq_puts(m, ",quiet");
-
+static int __init fat_init_inodecache(void)
+{
+	fat_inode_cachep = kmem_cache_create("vxext_fat_inode_cache",
+					     sizeof(struct msdos_inode_info),
+					     0, (SLAB_RECLAIM_ACCOUNT|
+						SLAB_MEM_SPREAD),
+					     init_once);
+	if (fat_inode_cachep == NULL)
+		return -ENOMEM;
 	return 0;
 }
 
-enum
+static void __exit fat_destroy_inodecache(void)
 {
-	Opt_uid, Opt_gid, Opt_umask, Opt_dmask, Opt_fmask, Opt_quiet, Opt_debug,
-	Opt_uni_xl_no, Opt_uni_xl_yes,
-	Opt_err,
-};
+	kmem_cache_destroy(fat_inode_cachep);
+}
 
-static match_table_t vxext_tokens =
+static int fat_remount(struct super_block *sb, int *flags, char *data)
 {
-	{Opt_uid, "uid=%u"},
-	{Opt_gid, "gid=%u"},
-	{Opt_umask, "umask=%o"},
-	{Opt_dmask, "dmask=%o"},
-	{Opt_fmask, "fmask=%o"},
-	{Opt_quiet, "quiet"},
-	{Opt_debug, "debug"},
-	{Opt_err, NULL}
-};
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	*flags |= MS_NODIRATIME | (sbi->options.isvfat ? 0 : MS_NOATIME);
+	return 0;
+}
 
-static int parse_options(char *options, int *debug,
-												 struct vxext_mount_options *opts)
+static int fat_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
-	char *p;
-	substring_t args[MAX_OPT_ARGS];
-	int option;
+	struct msdos_sb_info *sbi = MSDOS_SB(dentry->d_sb);
 
-	opts->fs_uid = current->uid;
-	opts->fs_gid = current->gid;
-	opts->fs_fmask = opts->fs_dmask = current->fs->umask;
-	opts->quiet = 0;
-	*debug = 0;
-
-	if(!options)
-		return 1;
-
-	while((p = strsep(&options, ",")) != NULL)
-	{
-		int token;
-
-		if(!*p)
-			continue;
-
-		token = match_token(p, vxext_tokens, args);
-		switch(token)
-		{
-			case Opt_quiet:
-				opts->quiet = 1;
-			break;
-		
-			case Opt_debug:
-				*debug = 1;
-			break;
-		
-			case Opt_uid:
-				if(match_int(&args[0], &option))
-					return 0;
-				opts->fs_uid = option;
-			break;
-		
-			case Opt_gid:
-				if(match_int(&args[0], &option))
-					return 0;
-				opts->fs_gid = option;
-			break;
-		
-			case Opt_umask:
-				if(match_octal(&args[0], &option))
-					return 0;
-				opts->fs_fmask = opts->fs_dmask = option;
-			break;
-		
-			case Opt_dmask:
-				if(match_octal(&args[0], &option))
-					return 0;
-				opts->fs_dmask = option;
-			break;
-		
-			case Opt_fmask:
-				if(match_octal(&args[0], &option))
-					return 0;
-				opts->fs_fmask = option;
-			break;
-
-			// unknown option
-			default:
-				printk(KERN_ERR "VXEXT: Unrecognized mount option \"%s\" "
-												"or missing value\n", p);
-				return 0;
-		}
+	/* If the count of free cluster is still unknown, counts it here. */
+	if (sbi->free_clusters == -1 || !sbi->free_clus_valid) {
+		int err = fat_count_free_clusters(dentry->d_sb);
+		if (err)
+			return err;
 	}
 
-	return 1;
-}
-
-static int vxext_calc_dir_size(struct inode *inode)
-{
-	struct vxext_sb_info *sbi = VXEXT_SB(inode->i_sb);
-	int ret, fclus, dclus;
-
-	inode->i_size = 0;
-	if(VXEXT_I(inode)->i_start == 0)
-		return 0;
-
-	ret = vxext_get_cluster(inode, FAT_ENT_EOF, &fclus, &dclus);
-	if(ret < 0)
-		return ret;
-
-	inode->i_size = (fclus + 1) * sbi->cluster_size;
+	buf->f_type = dentry->d_sb->s_magic;
+	buf->f_bsize = sbi->cluster_size;
+	buf->f_blocks = sbi->max_cluster - FAT_START_ENT;
+	buf->f_bfree = sbi->free_clusters;
+	buf->f_bavail = sbi->free_clusters;
+   #ifndef VXEXT_FS
+	buf->f_namelen = sbi->options.isvfat ? 260 : 12;
+   #else
+   buf->f_namelen = MSDOS_NAME;
+   #endif
 
 	return 0;
 }
 
-static int vxext_read_root(struct inode *inode)
+static int fat_write_inode(struct inode *inode, int wait)
 {
 	struct super_block *sb = inode->i_sb;
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	struct buffer_head *bh;
+	struct msdos_dir_entry *raw_entry;
+	loff_t i_pos;
+	int err;
 
-	VXEXT_I(inode)->file_cluster = VXEXT_I(inode)->disk_cluster = 0;
-	VXEXT_I(inode)->i_pos = 0;
-	inode->i_uid = sbi->options.fs_uid;
-	inode->i_gid = sbi->options.fs_gid;
-	inode->i_version++;
-	inode->i_generation = 0;
-	inode->i_mode = (S_IRWXUGO & ~sbi->options.fs_dmask) | S_IFDIR;
-	inode->i_op = sbi->dir_ops;
-	inode->i_fop = &vxext_dir_operations;
-	VXEXT_I(inode)->i_start = 0;
-	inode->i_size = sbi->dir_entries * sizeof(struct vxext_dir_entry);
-	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
-			   & ~((loff_t)sbi->cluster_size - 1)) >> 9;
-	VXEXT_I(inode)->i_logstart = 0;
-	VXEXT_I(inode)->mmu_private = inode->i_size;
+retry:
+	i_pos = MSDOS_I(inode)->i_pos;
+	if (inode->i_ino == MSDOS_ROOT_INO || !i_pos)
+		return 0;
 
-	VXEXT_I(inode)->i_attrs = 0;
-	inode->i_mtime.tv_sec = inode->i_atime.tv_sec = inode->i_ctime.tv_sec = 0;
-	inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec = inode->i_ctime.tv_nsec = 0;
-	inode->i_nlink = vxext_subdirs(inode)+2;
+	bh = sb_bread(sb, i_pos >> sbi->dir_per_block_bits);
+	if (!bh) {
+		printk(KERN_ERR "FAT: unable to read inode block "
+		       "for updating (i_pos %lld)\n", i_pos);
+		return -EIO;
+	}
+	spin_lock(&sbi->inode_hash_lock);
+	if (i_pos != MSDOS_I(inode)->i_pos) {
+		spin_unlock(&sbi->inode_hash_lock);
+		brelse(bh);
+		goto retry;
+	}
 
-	return 0;
+	raw_entry = &((struct msdos_dir_entry *) (bh->b_data))
+	    [i_pos & (sbi->dir_per_block - 1)];
+	if (S_ISDIR(inode->i_mode))
+		raw_entry->size = 0;
+	else
+		raw_entry->size = cpu_to_le32(inode->i_size);
+	raw_entry->attr = fat_attr(inode);
+	raw_entry->start = cpu_to_le16(MSDOS_I(inode)->i_logstart);
+   #ifndef VXEXT_FS
+	raw_entry->starthi = cpu_to_le16(MSDOS_I(inode)->i_logstart >> 16);
+   #endif
+	fat_date_unix2dos(inode->i_mtime.tv_sec, &raw_entry->time,
+			  &raw_entry->date, sbi->options.tz_utc);
+   #ifndef VXEXT_FS
+	if (sbi->options.isvfat) {
+		__le16 atime;
+		fat_date_unix2dos(inode->i_ctime.tv_sec, &raw_entry->ctime,
+				  &raw_entry->cdate, sbi->options.tz_utc);
+		fat_date_unix2dos(inode->i_atime.tv_sec, &atime,
+				  &raw_entry->adate, sbi->options.tz_utc);
+		raw_entry->ctime_cs = (inode->i_ctime.tv_sec & 1) * 100 +
+			inode->i_ctime.tv_nsec / 10000000;
+	}
+   #endif
+	spin_unlock(&sbi->inode_hash_lock);
+	mark_buffer_dirty(bh);
+	err = 0;
+	if (wait)
+		err = sync_dirty_buffer(bh);
+	brelse(bh);
+	return err;
 }
+
+int fat_sync_inode(struct inode *inode)
+{
+	return fat_write_inode(inode, 1);
+}
+
+#ifndef VXEXT_FS
+EXPORT_SYMBOL_GPL(fat_sync_inode);
+#endif
+
+static int fat_show_options(struct seq_file *m, struct vfsmount *mnt);
+static const struct super_operations fat_sops = {
+	.alloc_inode	= fat_alloc_inode,
+	.destroy_inode	= fat_destroy_inode,
+	.write_inode	= fat_write_inode,
+	.delete_inode	= fat_delete_inode,
+	.put_super	= fat_put_super,
+	.write_super	= fat_write_super,
+	.statfs		= fat_statfs,
+	.clear_inode	= fat_clear_inode,
+	.remount_fs	= fat_remount,
+
+	.show_options	= fat_show_options,
+};
 
 /*
  * a FAT file handle with fhtype 3 is
@@ -374,27 +706,23 @@ static int vxext_read_root(struct inode *inode)
  * of i_logstart is used to store the directory entry offset.
  */
 
-static struct dentry *vxext_fh_to_dentry(struct super_block *sb,
-                                         struct fid *fid, int fh_len, int fh_type)
+static struct dentry *fat_fh_to_dentry(struct super_block *sb,
+		struct fid *fid, int fh_len, int fh_type)
 {
 	struct inode *inode = NULL;
 	struct dentry *result;
-  u32 *fh = fid->raw;
+	u32 *fh = fid->raw;
 
-  if(fh_len < 5 || fh_type != 3)
-    return NULL;
+	if (fh_len < 5 || fh_type != 3)
+		return NULL;
 
-	inode = iget(sb, fh[0]);
-	if(!inode || is_bad_inode(inode) || inode->i_generation != fh[1])
-	{
-		if(inode)
+	inode = ilookup(sb, fh[0]);
+	if (!inode || inode->i_generation != fh[1]) {
+		if (inode)
 			iput(inode);
-
 		inode = NULL;
 	}
-
-	if(!inode)
-	{
+	if (!inode) {
 		loff_t i_pos;
 		int i_logstart = fh[3] & 0x0fffffff;
 
@@ -406,16 +734,13 @@ static struct dentry *vxext_fh_to_dentry(struct super_block *sb,
 		 * Will fail if you truncate and then re-write
 		 */
 
-		inode = vxext_iget(sb, i_pos);
-		if(inode && VXEXT_I(inode)->i_logstart != i_logstart)
-		{
+		inode = fat_iget(sb, i_pos);
+		if (inode && MSDOS_I(inode)->i_logstart != i_logstart) {
 			iput(inode);
 			inode = NULL;
 		}
 	}
-	
-	if(!inode)
-	{
+	if (!inode) {
 		/* For now, do nothing
 		 * What we could do is:
 		 * follow the file starting at fh[4], and record
@@ -424,765 +749,954 @@ static struct dentry *vxext_fh_to_dentry(struct super_block *sb,
 		 * This way we build a path to the root of
 		 * the tree. If this works, we lookup the path and so
 		 * get this inode into the cache.
-		 * Finally try the vxext_iget lookup again
+		 * Finally try the fat_iget lookup again
 		 * If that fails, then weare totally out of luck
 		 * But all that is for another day
 		 */
 	}
-	
-	if(!inode)
+	if (!inode)
 		return ERR_PTR(-ESTALE);
 
-	
+
 	/* now to find a dentry.
 	 * If possible, get a well-connected one
 	 */
 	result = d_alloc_anon(inode);
-	if(result == NULL)
-	{
+	if (result == NULL) {
 		iput(inode);
 		return ERR_PTR(-ENOMEM);
 	}
-
 	result->d_op = sb->s_root->d_op;
 	return result;
 }
 
-int vxext_encode_fh(struct dentry *de, __u32 *fh, int *lenp, int connectable)
+static int
+fat_encode_fh(struct dentry *de, __u32 *fh, int *lenp, int connectable)
 {
 	int len = *lenp;
 	struct inode *inode =  de->d_inode;
 	u32 ipos_h, ipos_m, ipos_l;
-	
-	if(len < 5)
+
+	if (len < 5)
 		return 255; /* no room */
 
-	ipos_h = VXEXT_I(inode)->i_pos >> 8;
-	ipos_m = (VXEXT_I(inode)->i_pos & 0xf0) << 24;
-	ipos_l = (VXEXT_I(inode)->i_pos & 0x0f) << 28;
+	ipos_h = MSDOS_I(inode)->i_pos >> 8;
+	ipos_m = (MSDOS_I(inode)->i_pos & 0xf0) << 24;
+	ipos_l = (MSDOS_I(inode)->i_pos & 0x0f) << 28;
 	*lenp = 5;
 	fh[0] = inode->i_ino;
 	fh[1] = inode->i_generation;
 	fh[2] = ipos_h;
-	fh[3] = ipos_m | VXEXT_I(inode)->i_logstart;
+	fh[3] = ipos_m | MSDOS_I(inode)->i_logstart;
 	spin_lock(&de->d_lock);
-	fh[4] = ipos_l | VXEXT_I(de->d_parent->d_inode)->i_logstart;
+	fh[4] = ipos_l | MSDOS_I(de->d_parent->d_inode)->i_logstart;
 	spin_unlock(&de->d_lock);
-	
 	return 3;
 }
 
-struct dentry *vxext_get_parent(struct dentry *child)
+static struct dentry *fat_get_parent(struct dentry *child)
 {
-	struct buffer_head *bh=NULL;
-	struct vxext_dir_entry *de = NULL;
-	struct dentry *parent = NULL;
-	int res;
-	loff_t i_pos = 0;
+	struct super_block *sb = child->d_sb;
+	struct buffer_head *bh;
+	struct msdos_dir_entry *de;
+	loff_t i_pos;
+	struct dentry *parent;
 	struct inode *inode;
+	int err;
 
-	lock_kernel();
-	res = vxext_scan(child->d_inode, VXEXT_DOTDOT, &bh, &de, &i_pos);
-	res = -1;
+	lock_super(sb);
 
-	if(res < 0)
+	err = fat_get_dotdot_entry(child->d_inode, &bh, &de, &i_pos);
+	if (err) {
+		parent = ERR_PTR(err);
 		goto out;
-
-	inode = vxext_build_inode(child->d_sb, de, i_pos, &res);
-	if(res)
-		goto out;
-
-	if(!inode)
-	{
-		res = -EACCES;
 	}
+	inode = fat_build_inode(sb, de, i_pos);
+	brelse(bh);
+	if (IS_ERR(inode)) {
+		parent = ERR_CAST(inode);
+		goto out;
+	}
+	parent = d_alloc_anon(inode);
+	if (!parent) {
+		iput(inode);
+		parent = ERR_PTR(-ENOMEM);
+	}
+out:
+	unlock_super(sb);
+
+	return parent;
+}
+
+static const struct export_operations fat_export_ops = {
+	.encode_fh	= fat_encode_fh,
+	.fh_to_dentry	= fat_fh_to_dentry,
+	.get_parent	= fat_get_parent,
+};
+
+static int fat_show_options(struct seq_file *m, struct vfsmount *mnt)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(mnt->mnt_sb);
+	struct fat_mount_options *opts = &sbi->options;
+	int isvfat = opts->isvfat;
+
+	if (opts->fs_uid != 0)
+		seq_printf(m, ",uid=%u", opts->fs_uid);
+	if (opts->fs_gid != 0)
+		seq_printf(m, ",gid=%u", opts->fs_gid);
+	seq_printf(m, ",fmask=%04o", opts->fs_fmask);
+	seq_printf(m, ",dmask=%04o", opts->fs_dmask);
+	if (opts->allow_utime)
+		seq_printf(m, ",allow_utime=%04o", opts->allow_utime);
+	if (sbi->nls_disk)
+		seq_printf(m, ",codepage=%s", sbi->nls_disk->charset);
+	if (isvfat) {
+		if (sbi->nls_io)
+			seq_printf(m, ",iocharset=%s", sbi->nls_io->charset);
+
+		switch (opts->shortname) {
+		case VFAT_SFN_DISPLAY_WIN95 | VFAT_SFN_CREATE_WIN95:
+			seq_puts(m, ",shortname=win95");
+			break;
+		case VFAT_SFN_DISPLAY_WINNT | VFAT_SFN_CREATE_WINNT:
+			seq_puts(m, ",shortname=winnt");
+			break;
+		case VFAT_SFN_DISPLAY_WINNT | VFAT_SFN_CREATE_WIN95:
+			seq_puts(m, ",shortname=mixed");
+			break;
+		case VFAT_SFN_DISPLAY_LOWER | VFAT_SFN_CREATE_WIN95:
+			/* seq_puts(m, ",shortname=lower"); */
+			break;
+		default:
+			seq_puts(m, ",shortname=unknown");
+			break;
+		}
+	}
+	if (opts->name_check != 'n')
+		seq_printf(m, ",check=%c", opts->name_check);
+	if (opts->usefree)
+		seq_puts(m, ",usefree");
+	if (opts->quiet)
+		seq_puts(m, ",quiet");
+	if (opts->showexec)
+		seq_puts(m, ",showexec");
+	if (opts->sys_immutable)
+		seq_puts(m, ",sys_immutable");
+	if (!isvfat) {
+		if (opts->dotsOK)
+			seq_puts(m, ",dotsOK=yes");
+		if (opts->nocase)
+			seq_puts(m, ",nocase");
+	} else {
+		if (opts->utf8)
+			seq_puts(m, ",utf8");
+		if (opts->unicode_xlate)
+			seq_puts(m, ",uni_xlate");
+		if (!opts->numtail)
+			seq_puts(m, ",nonumtail");
+	}
+	if (sbi->options.flush)
+		seq_puts(m, ",flush");
+	if (opts->tz_utc)
+		seq_puts(m, ",tz=UTC");
+
+	return 0;
+}
+
+enum {
+	Opt_check_n, Opt_check_r, Opt_check_s, Opt_uid, Opt_gid,
+	Opt_umask, Opt_dmask, Opt_fmask, Opt_allow_utime, Opt_codepage,
+	Opt_usefree, Opt_nocase, Opt_quiet, Opt_showexec, Opt_debug,
+	Opt_immutable, Opt_dots, Opt_nodots,
+	Opt_charset, Opt_shortname_lower, Opt_shortname_win95,
+	Opt_shortname_winnt, Opt_shortname_mixed, Opt_utf8_no, Opt_utf8_yes,
+	Opt_uni_xl_no, Opt_uni_xl_yes, Opt_nonumtail_no, Opt_nonumtail_yes,
+	Opt_obsolate, Opt_flush, Opt_tz_utc, Opt_err,
+};
+
+static match_table_t fat_tokens = {
+	{Opt_check_r, "check=relaxed"},
+	{Opt_check_s, "check=strict"},
+	{Opt_check_n, "check=normal"},
+	{Opt_check_r, "check=r"},
+	{Opt_check_s, "check=s"},
+	{Opt_check_n, "check=n"},
+	{Opt_uid, "uid=%u"},
+	{Opt_gid, "gid=%u"},
+	{Opt_umask, "umask=%o"},
+	{Opt_dmask, "dmask=%o"},
+	{Opt_fmask, "fmask=%o"},
+	{Opt_allow_utime, "allow_utime=%o"},
+	{Opt_codepage, "codepage=%u"},
+	{Opt_usefree, "usefree"},
+	{Opt_nocase, "nocase"},
+	{Opt_quiet, "quiet"},
+	{Opt_showexec, "showexec"},
+	{Opt_debug, "debug"},
+	{Opt_immutable, "sys_immutable"},
+	{Opt_obsolate, "conv=binary"},
+	{Opt_obsolate, "conv=text"},
+	{Opt_obsolate, "conv=auto"},
+	{Opt_obsolate, "conv=b"},
+	{Opt_obsolate, "conv=t"},
+	{Opt_obsolate, "conv=a"},
+	{Opt_obsolate, "fat=%u"},
+	{Opt_obsolate, "blocksize=%u"},
+	{Opt_obsolate, "cvf_format=%20s"},
+	{Opt_obsolate, "cvf_options=%100s"},
+	{Opt_obsolate, "posix"},
+	{Opt_flush, "flush"},
+	{Opt_tz_utc, "tz=UTC"},
+	{Opt_err, NULL},
+};
+static match_table_t msdos_tokens = {
+	{Opt_nodots, "nodots"},
+	{Opt_nodots, "dotsOK=no"},
+	{Opt_dots, "dots"},
+	{Opt_dots, "dotsOK=yes"},
+	{Opt_err, NULL}
+};
+static match_table_t vfat_tokens = {
+	{Opt_charset, "iocharset=%s"},
+	{Opt_shortname_lower, "shortname=lower"},
+	{Opt_shortname_win95, "shortname=win95"},
+	{Opt_shortname_winnt, "shortname=winnt"},
+	{Opt_shortname_mixed, "shortname=mixed"},
+	{Opt_utf8_no, "utf8=0"},		/* 0 or no or false */
+	{Opt_utf8_no, "utf8=no"},
+	{Opt_utf8_no, "utf8=false"},
+	{Opt_utf8_yes, "utf8=1"},		/* empty or 1 or yes or true */
+	{Opt_utf8_yes, "utf8=yes"},
+	{Opt_utf8_yes, "utf8=true"},
+	{Opt_utf8_yes, "utf8"},
+	{Opt_uni_xl_no, "uni_xlate=0"},		/* 0 or no or false */
+	{Opt_uni_xl_no, "uni_xlate=no"},
+	{Opt_uni_xl_no, "uni_xlate=false"},
+	{Opt_uni_xl_yes, "uni_xlate=1"},	/* empty or 1 or yes or true */
+	{Opt_uni_xl_yes, "uni_xlate=yes"},
+	{Opt_uni_xl_yes, "uni_xlate=true"},
+	{Opt_uni_xl_yes, "uni_xlate"},
+	{Opt_nonumtail_no, "nonumtail=0"},	/* 0 or no or false */
+	{Opt_nonumtail_no, "nonumtail=no"},
+	{Opt_nonumtail_no, "nonumtail=false"},
+	{Opt_nonumtail_yes, "nonumtail=1"},	/* empty or 1 or yes or true */
+	{Opt_nonumtail_yes, "nonumtail=yes"},
+	{Opt_nonumtail_yes, "nonumtail=true"},
+	{Opt_nonumtail_yes, "nonumtail"},
+	{Opt_err, NULL}
+};
+
+static int parse_options(char *options, int is_vfat, int silent, int *debug,
+			 struct fat_mount_options *opts)
+{
+	char *p;
+	substring_t args[MAX_OPT_ARGS];
+	int option;
+	char *iocharset;
+
+	opts->isvfat = is_vfat;
+
+	opts->fs_uid = current->uid;
+	opts->fs_gid = current->gid;
+	opts->fs_fmask = opts->fs_dmask = current->fs->umask;
+	opts->allow_utime = -1;
+	opts->codepage = fat_default_codepage;
+	opts->iocharset = fat_default_iocharset;
+	if (is_vfat)
+		opts->shortname = VFAT_SFN_DISPLAY_LOWER|VFAT_SFN_CREATE_WIN95;
 	else
-	{
-		parent = d_alloc_anon(inode);
-		if(!parent)
-		{
-			iput(inode);
-			res = -ENOMEM;
+		opts->shortname = 0;
+	opts->name_check = 'n';
+	opts->quiet = opts->showexec = opts->sys_immutable = opts->dotsOK =  0;
+	opts->utf8 = opts->unicode_xlate = 0;
+	opts->numtail = 1;
+	opts->usefree = opts->nocase = 0;
+   #ifdef VXEXT_FS
+   opts->nocase = 1;
+   #endif
+	opts->tz_utc = 0;
+	*debug = 0;
+
+	if (!options)
+		goto out;
+
+	while ((p = strsep(&options, ",")) != NULL) {
+		int token;
+		if (!*p)
+			continue;
+
+		token = match_token(p, fat_tokens, args);
+		if (token == Opt_err) {
+			if (is_vfat)
+				token = match_token(p, vfat_tokens, args);
+			else
+				token = match_token(p, msdos_tokens, args);
+		}
+		switch (token) {
+		case Opt_check_s:
+			opts->name_check = 's';
+			break;
+		case Opt_check_r:
+			opts->name_check = 'r';
+			break;
+		case Opt_check_n:
+			opts->name_check = 'n';
+			break;
+		case Opt_usefree:
+			opts->usefree = 1;
+			break;
+		case Opt_nocase:
+			if (!is_vfat)
+				opts->nocase = 1;
+			else {
+				/* for backward compatibility */
+				opts->shortname = VFAT_SFN_DISPLAY_WIN95
+					| VFAT_SFN_CREATE_WIN95;
+			}
+			break;
+		case Opt_quiet:
+			opts->quiet = 1;
+			break;
+		case Opt_showexec:
+			opts->showexec = 1;
+			break;
+		case Opt_debug:
+			*debug = 1;
+			break;
+		case Opt_immutable:
+			opts->sys_immutable = 1;
+			break;
+		case Opt_uid:
+			if (match_int(&args[0], &option))
+				return 0;
+			opts->fs_uid = option;
+			break;
+		case Opt_gid:
+			if (match_int(&args[0], &option))
+				return 0;
+			opts->fs_gid = option;
+			break;
+		case Opt_umask:
+			if (match_octal(&args[0], &option))
+				return 0;
+			opts->fs_fmask = opts->fs_dmask = option;
+			break;
+		case Opt_dmask:
+			if (match_octal(&args[0], &option))
+				return 0;
+			opts->fs_dmask = option;
+			break;
+		case Opt_fmask:
+			if (match_octal(&args[0], &option))
+				return 0;
+			opts->fs_fmask = option;
+			break;
+		case Opt_allow_utime:
+			if (match_octal(&args[0], &option))
+				return 0;
+			opts->allow_utime = option & (S_IWGRP | S_IWOTH);
+			break;
+		case Opt_codepage:
+			if (match_int(&args[0], &option))
+				return 0;
+			opts->codepage = option;
+			break;
+		case Opt_flush:
+			opts->flush = 1;
+			break;
+		case Opt_tz_utc:
+			opts->tz_utc = 1;
+			break;
+
+		/* msdos specific */
+		case Opt_dots:
+			opts->dotsOK = 1;
+			break;
+		case Opt_nodots:
+			opts->dotsOK = 0;
+			break;
+
+		/* vfat specific */
+		case Opt_charset:
+			if (opts->iocharset != fat_default_iocharset)
+				kfree(opts->iocharset);
+			iocharset = match_strdup(&args[0]);
+			if (!iocharset)
+				return -ENOMEM;
+			opts->iocharset = iocharset;
+			break;
+		case Opt_shortname_lower:
+			opts->shortname = VFAT_SFN_DISPLAY_LOWER
+					| VFAT_SFN_CREATE_WIN95;
+			break;
+		case Opt_shortname_win95:
+			opts->shortname = VFAT_SFN_DISPLAY_WIN95
+					| VFAT_SFN_CREATE_WIN95;
+			break;
+		case Opt_shortname_winnt:
+			opts->shortname = VFAT_SFN_DISPLAY_WINNT
+					| VFAT_SFN_CREATE_WINNT;
+			break;
+		case Opt_shortname_mixed:
+			opts->shortname = VFAT_SFN_DISPLAY_WINNT
+					| VFAT_SFN_CREATE_WIN95;
+			break;
+		case Opt_utf8_no:		/* 0 or no or false */
+			opts->utf8 = 0;
+			break;
+		case Opt_utf8_yes:		/* empty or 1 or yes or true */
+			opts->utf8 = 1;
+			break;
+		case Opt_uni_xl_no:		/* 0 or no or false */
+			opts->unicode_xlate = 0;
+			break;
+		case Opt_uni_xl_yes:		/* empty or 1 or yes or true */
+			opts->unicode_xlate = 1;
+			break;
+		case Opt_nonumtail_no:		/* 0 or no or false */
+			opts->numtail = 1;	/* negated option */
+			break;
+		case Opt_nonumtail_yes:		/* empty or 1 or yes or true */
+			opts->numtail = 0;	/* negated option */
+			break;
+
+		/* obsolete mount options */
+		case Opt_obsolate:
+			printk(KERN_INFO "FAT: \"%s\" option is obsolete, "
+			       "not supported now\n", p);
+			break;
+		/* unknown option */
+		default:
+			if (!silent) {
+				printk(KERN_ERR
+				       "FAT: Unrecognized mount option \"%s\" "
+				       "or missing value\n", p);
+			}
+			return -EINVAL;
 		}
 	}
 
- out:
-	if(bh)
-		brelse(bh);
+out:
+	/* UTF-8 doesn't provide FAT semantics */
+	if (!strcmp(opts->iocharset, "utf8")) {
+		printk(KERN_ERR "FAT: utf8 is not a recommended IO charset"
+		       " for FAT filesystems, filesystem will be "
+		       "case sensitive!\n");
+	}
 
-	unlock_kernel();
-	if(res)
-		return ERR_PTR(res);
-	else
-		return parent;
-}
-
-static struct kmem_cache *vxext_inode_cachep;
-
-static struct inode *vxext_alloc_inode(struct super_block *sb)
-{
-	struct vxext_inode_info *ei;
-	ei = (struct vxext_inode_info *)kmem_cache_alloc(vxext_inode_cachep, GFP_KERNEL);
-	if(!ei)
-		return NULL;
-
-	return &ei->vfs_inode;
-}
-
-static void vxext_destroy_inode(struct inode *inode)
-{
-	kmem_cache_free(vxext_inode_cachep, VXEXT_I(inode));
-}
-
-static void init_once(struct kmem_cache *cachep, void *foo)
-{
-	struct vxext_inode_info *ei = (struct vxext_inode_info *) foo;
-
-	INIT_LIST_HEAD(&ei->i_fat_hash);
-	inode_init_once(&ei->vfs_inode);
-}
- 
-int __init vxext_init_inodecache(void)
-{
-	vxext_inode_cachep = kmem_cache_create("vxext_inode_cache",
-					     sizeof(struct vxext_inode_info),
-                                             0, (SLAB_RECLAIM_ACCOUNT|
-                                                SLAB_MEM_SPREAD),
-                                             init_once);
-
-	if(vxext_inode_cachep == NULL)
-		return -ENOMEM;
+	/* If user doesn't specify allow_utime, it's initialized from dmask. */
+	if (opts->allow_utime == (unsigned short)-1)
+		opts->allow_utime = ~opts->fs_dmask & (S_IWGRP | S_IWOTH);
+	if (opts->unicode_xlate)
+		opts->utf8 = 0;
 
 	return 0;
 }
 
-void __exit vxext_destroy_inodecache(void)
+static int fat_read_root(struct inode *inode)
 {
-	kmem_cache_destroy(vxext_inode_cachep);
-}
+	struct super_block *sb = inode->i_sb;
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	int error;
 
-static int vxext_remount(struct super_block *sb, int *flags, char *data)
-{
-	*flags |= MS_NODIRATIME;
+	MSDOS_I(inode)->i_pos = 0;
+	inode->i_uid = sbi->options.fs_uid;
+	inode->i_gid = sbi->options.fs_gid;
+	inode->i_version++;
+	inode->i_generation = 0;
+	inode->i_mode = (S_IRWXUGO & ~sbi->options.fs_dmask) | S_IFDIR;
+	inode->i_op = sbi->dir_ops;
+	inode->i_fop = &fat_dir_operations;
+	if (sbi->fat_bits == 32) {
+		MSDOS_I(inode)->i_start = sbi->root_cluster;
+		error = fat_calc_dir_size(inode);
+		if (error < 0)
+			return error;
+	} else {
+		MSDOS_I(inode)->i_start = 0;
+		inode->i_size = sbi->dir_entries * sizeof(struct msdos_dir_entry);
+	}
+	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
+			   & ~((loff_t)sbi->cluster_size - 1)) >> 9;
+	MSDOS_I(inode)->i_logstart = 0;
+	MSDOS_I(inode)->mmu_private = inode->i_size;
+
+	MSDOS_I(inode)->i_attrs = ATTR_NONE;
+	inode->i_mtime.tv_sec = inode->i_atime.tv_sec = inode->i_ctime.tv_sec = 0;
+	inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec = inode->i_ctime.tv_nsec = 0;
+	inode->i_nlink = fat_subdirs(inode)+2;
+
 	return 0;
 }
-
-static struct super_operations vxext_sops =
-{ 
-	.alloc_inode		= vxext_alloc_inode,
-	.destroy_inode	= vxext_destroy_inode,
-	.write_inode		= vxext_write_inode,
-	.delete_inode		= vxext_delete_inode,
-	.put_super			= vxext_put_super,
-	.statfs					= vxext_statfs,
-	.clear_inode		= vxext_clear_inode,
-	.remount_fs			= vxext_remount,
-	.read_inode			= make_bad_inode,
-	.show_options		= vxext_show_options,
-};
-
-static struct export_operations vxext_export_ops =
-{
-	.encode_fh	  = vxext_encode_fh,
-	.fh_to_dentry = vxext_fh_to_dentry,
-	.get_parent	  = vxext_get_parent,
-};
 
 /*
- * Read the super block of an VxWorks extended DOS filesystem disk.
+ * Read the super block of an MS-DOS FS.
  */
-int vxext_fill_super(struct super_block *sb, void *data, int silent,
-										 struct inode_operations *fs_dir_inode_ops)
+int fat_fill_super(struct super_block *sb, void *data, int silent,
+		   const struct inode_operations *fs_dir_inode_ops, int isvfat)
 {
 	struct inode *root_inode = NULL;
 	struct buffer_head *bh;
-	struct vxext_boot_sector *b;
-	struct vxext_sb_info *sbi;
+	struct fat_boot_sector *b;
+	struct msdos_sb_info *sbi;
 	u16 logical_sector_size;
-	u32 total_sectors, total_clusters, vxext_clusters, rootdir_sectors;
-	int debug, first;
+	u32 total_sectors, total_clusters, fat_clusters, rootdir_sectors;
+	int debug;
 	unsigned int media;
 	long error;
+	char buf[50];
 
-	sbi = kmalloc(sizeof(struct vxext_sb_info), GFP_KERNEL);
-	if(!sbi)
+	/*
+	 * GFP_KERNEL is ok here, because while we do hold the
+	 * supeblock lock, memory pressure can't call back into
+	 * the filesystem, since we're only just about to mount
+	 * it and have no inodes etc active!
+	 */
+	sbi = kzalloc(sizeof(struct msdos_sb_info), GFP_KERNEL);
+	if (!sbi)
 		return -ENOMEM;
-
 	sb->s_fs_info = sbi;
-	memset(sbi, 0, sizeof(struct vxext_sb_info));
 
 	sb->s_flags |= MS_NODIRATIME;
-	sb->s_magic = VXEXT_SUPER_MAGIC;
-	sb->s_op = &vxext_sops;
-	sb->s_export_op = &vxext_export_ops;
+	sb->s_magic = MSDOS_SUPER_MAGIC;
+	sb->s_op = &fat_sops;
+	sb->s_export_op = &fat_export_ops;
 	sbi->dir_ops = fs_dir_inode_ops;
 
-	error = -EINVAL;
-	if (!parse_options(data, &debug, &sbi->options))
+	error = parse_options(data, isvfat, silent, &debug, &sbi->options);
+	if (error)
 		goto out_fail;
-
-	vxext_cache_init(sb);
-	// set up enough so that it can read an inode
-	init_MUTEX(&sbi->fat_lock);
 
 	error = -EIO;
 	sb_min_blocksize(sb, 512);
 	bh = sb_bread(sb, 0);
-	if (bh == NULL)
-	{
-		printk(KERN_ERR "VXEXT: unable to read boot sector\n");
+	if (bh == NULL) {
+		printk(KERN_ERR "FAT: unable to read boot sector\n");
 		goto out_fail;
 	}
 
-	b = (struct vxext_boot_sector *) bh->b_data;
+	b = (struct fat_boot_sector *) bh->b_data;
 
-	#ifdef DEBUG
-	printk(KERN_INFO "read bootsector:\n");
-	printk(KERN_INFO "---------------\n");
-	printk(KERN_INFO "system_id.........: %s\n",		b->system_id);
-	printk(KERN_INFO "sector_size.......: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->sector_size)));
-	printk(KERN_INFO "sec_per_clus......: %ld\n", 	b->sec_per_clus);
-	printk(KERN_INFO "reserved sectors..: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->reserved)));
-	printk(KERN_INFO "# of FATs.........: %ld\n",		b->fats);
-	printk(KERN_INFO "max # of root dirs: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->dir_entries)));
-	printk(KERN_INFO "# of sectors......: %ld\n",		CF_LE_W(get_unaligned((u16 *)&b->sectors)));
-	printk(KERN_INFO "media type........: 0x%lx\n",	b->media);
-	printk(KERN_INFO "# of sectors/FAT..: %d\n",		CF_LE_W(get_unaligned((u16 *)&b->fat_length)));
-	printk(KERN_INFO "# of sectors/track: %d\n",		CF_LE_W(get_unaligned((u16 *)&b->secs_track)));
-	printk(KERN_INFO "# of heads........: %d\n",		CF_LE_W(get_unaligned((u16 *)&b->heads)));
-	printk(KERN_INFO "# of hidden sect..: %d\n",		CF_LE_L(b->hidden));
-	printk(KERN_INFO "long total sectors: %ld\n",		CF_LE_L(b->total_sect));
-	#endif
+   #ifdef DEBUG
+   printk(KERN_INFO "read bootsector:\n");
+   printk(KERN_INFO "---------------\n");
+   printk(KERN_INFO "system_id.........: %s\n",    b->system_id);
+   printk(KERN_INFO "sector_size.......: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->sector_size)));
+   printk(KERN_INFO "sec_per_clus......: %d\n",   b->sec_per_clus);
+   printk(KERN_INFO "reserved sectors..: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->reserved)));
+   printk(KERN_INFO "# of FATs.........: %d\n",   b->fats);
+   printk(KERN_INFO "max # of root dirs: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->dir_entries)));
+   printk(KERN_INFO "# of sectors......: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->sectors)));
+   printk(KERN_INFO "media type........: 0x%x\n", b->media);
+   printk(KERN_INFO "# of sectors/FAT..: %d\n",    le16_to_cpu(get_unaligned((__le16 *)&b->fat_length)));
+   printk(KERN_INFO "# of sectors/track: %d\n",    le16_to_cpu(get_unaligned((__le16 *)&b->secs_track)));
+   printk(KERN_INFO "# of heads........: %d\n",    le16_to_cpu(get_unaligned((__le16 *)&b->heads)));
+   printk(KERN_INFO "# of hidden sect..: %d\n",    le32_to_cpu(b->hidden));
+   printk(KERN_INFO "long total sectors: %d\n",   le32_to_cpu(b->total_sect));
+   #endif
 
-	// use the supermagic string for identifying the VxWorks extended DOS
-	// filesystem
-	if(strcmp(b->system_id, VXEXT_SUPER_MAGIC_STRING) != 0)
-	{
+	if (!b->reserved) {
+		if (!silent)
+			printk(KERN_ERR "FAT: bogus number of reserved sectors\n");
 		brelse(bh);
-		goto out_fail;
+		goto out_invalid;
 	}
-
-	if(b->reserved == 0)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus number of reserved sectors\n");
-
+	if (!b->fats) {
+		if (!silent)
+			printk(KERN_ERR "FAT: bogus number of FAT structure\n");
 		brelse(bh);
 		goto out_invalid;
 	}
 
-	if(b->fats == 0)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus number of FAT structure\n");
-
-		brelse(bh);
-		goto out_invalid;
-	}
+	/*
+	 * Earlier we checked here that b->secs_track and b->head are nonzero,
+	 * but it turns out valid FAT filesystems can have zero there.
+	 */
 
 	media = b->media;
-	if(!VXEXT_VALID_MEDIA(media))
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: invalid media value (0x%02x)\n",
+	if (!fat_valid_media(media)) {
+		if (!silent)
+			printk(KERN_ERR "FAT: invalid media value (0x%02x)\n",
 			       media);
-
 		brelse(bh);
 		goto out_invalid;
 	}
-	
-	logical_sector_size = CF_LE_W(get_unaligned((u16 *)&b->sector_size));
-	if(logical_sector_size == 0
-	    || (logical_sector_size & (logical_sector_size - 1))
+	logical_sector_size = get_unaligned_le16(&b->sector_size);
+	if (!is_power_of_2(logical_sector_size)
 	    || (logical_sector_size < 512)
-	    || (PAGE_CACHE_SIZE < logical_sector_size))
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus logical sector size %u\n",
+	    || (logical_sector_size > 4096)) {
+		if (!silent)
+			printk(KERN_ERR "FAT: bogus logical sector size %u\n",
 			       logical_sector_size);
-
 		brelse(bh);
 		goto out_invalid;
 	}
 
-	total_sectors = CF_LE_W(get_unaligned((u16 *)&b->sectors));
+   #ifdef VXEXT_FS
+	total_sectors = get_unaligned_le16(&b->sectors);
 	if(total_sectors == 0)
-		total_sectors = CF_LE_L(b->total_sect);
+		total_sectors = le32_to_cpu(b->total_sect);
 
-	if(total_sectors == 0)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus total_sectors\n");
+   if(total_sectors == 0)
+   {
+      if(!silent)
+         printk(KERN_ERR "VXEXT: bogus total_sectors\n");
 
-		brelse(bh);
-		goto out_invalid;
-	}
+      brelse(bh);
+      goto out_invalid;
+   }
+   
+   // on some VXEXT 1.0 filesystems the sectors_per_cluster field is set to
+   // zero to signal that the sectors per cluster are simply
+   // max_sectors / 65535 - therefore we check that case here
+   if(b->sec_per_clus != 0)
+      sbi->sec_per_clus = b->sec_per_clus;
+   else
+   {
+      // calculate the sectors per cluster dynamically out of the total
+      // sectors the partition has. This somehow breaks the FAT16 DOS
+      // specification but is exactly what Wind River does for filling
+      // up the whole disk with having more than 2GB data on the disk.
+      // Please note that if there is any remainder out of the division,
+      // then the sectors per cluster size is increased by one, rounding
+      // up to a "safe" cluster size.
+      sbi->sec_per_clus = total_sectors / FAT_MAX_DIR_ENTRIES;
+      if(sbi->sec_per_clus % FAT_MAX_DIR_ENTRIES)
+         sbi->sec_per_clus++;
+   }
 
-	// on some VXEXT 1.0 filesystems the sectors_per_cluster field is set to
-	// zero to signal that the sectors per cluster are simply
-	// max_sectors / 65535 - therefore we check that case here
-	if(b->sec_per_clus != 0)
-    sbi->sec_per_clus = b->sec_per_clus;
-  else
-  {
-    // calculate the sectors per cluster dynamically out of the total
-    // sectors the partition has. This somehow breask the FAT16 DOS
-    // specification but is exactly what Wind River does for filling
-    // up the whole disk with having more than 2GB data on the disk.
-    // Please note that if there is any remainder out of the division,
-    // then the sectors per cluster size is increased by one, rounding
-    // up to a "safe" cluster size.
-    sbi->sec_per_clus = total_sectors / FAT_MAX_DIR_ENTRIES;
-    if(sbi->sec_per_clus % FAT_MAX_DIR_ENTRIES)
-      sbi->sec_per_clus++;
-  }
-
-	if(sbi->sec_per_clus == 0)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus sectors per cluster %u\n",
+   if(sbi->sec_per_clus == 0)
+   {
+     if(!silent)
+       printk(KERN_ERR "VXEXT: bogus sectors per cluster %u\n",
+              sbi->sec_per_clus);
+ 
+     brelse(bh);
+     goto out_invalid;
+   }
+    
+   #else
+	sbi->sec_per_clus = b->sec_per_clus;
+	if (!is_power_of_2(sbi->sec_per_clus)) {
+		if (!silent)
+			printk(KERN_ERR "FAT: bogus sectors per cluster %u\n",
 			       sbi->sec_per_clus);
-
 		brelse(bh);
 		goto out_invalid;
 	}
+   #endif
 
-	if(logical_sector_size < sb->s_blocksize)
-	{
-		printk(KERN_ERR "VXEXT: logical sector size too small for device"
+	if (logical_sector_size < sb->s_blocksize) {
+		printk(KERN_ERR "FAT: logical sector size too small for device"
 		       " (logical sector size = %u)\n", logical_sector_size);
-
 		brelse(bh);
 		goto out_fail;
 	}
-
-	if(logical_sector_size > sb->s_blocksize)
-	{
+	if (logical_sector_size > sb->s_blocksize) {
 		brelse(bh);
 
-		if(!sb_set_blocksize(sb, logical_sector_size))
-		{
-			printk(KERN_ERR "VXEXT: unable to set blocksize %u\n",
+		if (!sb_set_blocksize(sb, logical_sector_size)) {
+			printk(KERN_ERR "FAT: unable to set blocksize %u\n",
 			       logical_sector_size);
-
 			goto out_fail;
 		}
-
 		bh = sb_bread(sb, 0);
-
-		if (bh == NULL)
-		{
-			printk(KERN_ERR "VXEXT: unable to read boot sector"
+		if (bh == NULL) {
+			printk(KERN_ERR "FAT: unable to read boot sector"
 			       " (logical sector size = %lu)\n",
 			       sb->s_blocksize);
+			goto out_fail;
+		}
+		b = (struct fat_boot_sector *) bh->b_data;
+	}
 
+	sbi->cluster_size = sb->s_blocksize * sbi->sec_per_clus;
+   #ifdef VXEXT_FS
+   // vxworks uses cluster sizes not bound to base 2 that's why
+   // we set cluster_bits to zero as we can't use it anyway!
+	sbi->cluster_bits = 0;
+   #else
+	sbi->cluster_bits = ffs(sbi->cluster_size) - 1;
+   #endif
+	sbi->fats = b->fats;
+	sbi->fat_bits = 0;		/* Don't know yet */
+	sbi->fat_start = le16_to_cpu(b->reserved);
+	sbi->fat_length = le16_to_cpu(b->fat_length);
+	sbi->root_cluster = 0;
+	sbi->free_clusters = -1;	/* Don't know yet */
+	sbi->free_clus_valid = 0;
+	sbi->prev_free = FAT_START_ENT;
+
+	if (!sbi->fat_length && b->fat32_length) {
+		struct fat_boot_fsinfo *fsinfo;
+		struct buffer_head *fsinfo_bh;
+
+		/* Must be FAT32 */
+		sbi->fat_bits = 32;
+		sbi->fat_length = le32_to_cpu(b->fat32_length);
+		sbi->root_cluster = le32_to_cpu(b->root_cluster);
+
+		sb->s_maxbytes = 0xffffffff;
+
+		/* MC - if info_sector is 0, don't multiply by 0 */
+		sbi->fsinfo_sector = le16_to_cpu(b->info_sector);
+		if (sbi->fsinfo_sector == 0)
+			sbi->fsinfo_sector = 1;
+
+		fsinfo_bh = sb_bread(sb, sbi->fsinfo_sector);
+		if (fsinfo_bh == NULL) {
+			printk(KERN_ERR "FAT: bread failed, FSINFO block"
+			       " (sector = %lu)\n", sbi->fsinfo_sector);
+			brelse(bh);
 			goto out_fail;
 		}
 
-		b = (struct vxext_boot_sector *) bh->b_data;
+		fsinfo = (struct fat_boot_fsinfo *)fsinfo_bh->b_data;
+		if (!IS_FSINFO(fsinfo)) {
+			printk(KERN_WARNING "FAT: Invalid FSINFO signature: "
+			       "0x%08x, 0x%08x (sector = %lu)\n",
+			       le32_to_cpu(fsinfo->signature1),
+			       le32_to_cpu(fsinfo->signature2),
+			       sbi->fsinfo_sector);
+		} else {
+			if (sbi->options.usefree)
+				sbi->free_clus_valid = 1;
+			sbi->free_clusters = le32_to_cpu(fsinfo->free_clusters);
+			sbi->prev_free = le32_to_cpu(fsinfo->next_cluster);
+		}
+
+		brelse(fsinfo_bh);
 	}
 
-	// calculate the cluster size required for accomodating
-	// a cluster
-	sbi->cluster_size = sb->s_blocksize * sbi->sec_per_clus;
-
-	sbi->fats = b->fats;
-	sbi->fat_start = CF_LE_W(b->reserved);
-	sbi->fat_length = CF_LE_W(b->fat_length);
-	sbi->root_cluster = 0;
-	sbi->free_clusters = -1;	// Don't know it yet
-	sbi->prev_free = -1;
-
-	if(sbi->fat_length == 0)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus FAT length\n");
-
-		brelse(bh);
-		goto out_invalid;
-	}
-
-	sbi->dir_per_block = sb->s_blocksize / sizeof(struct vxext_dir_entry);
+	sbi->dir_per_block = sb->s_blocksize / sizeof(struct msdos_dir_entry);
 	sbi->dir_per_block_bits = ffs(sbi->dir_per_block) - 1;
 
 	sbi->dir_start = sbi->fat_start + sbi->fats * sbi->fat_length;
-	sbi->dir_entries = CF_LE_W(get_unaligned((u16 *)&b->dir_entries));
-
-	if(sbi->dir_entries & (sbi->dir_per_block - 1))
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: bogus directroy-entries per block"
+	sbi->dir_entries = get_unaligned_le16(&b->dir_entries);
+	if (sbi->dir_entries & (sbi->dir_per_block - 1)) {
+		if (!silent)
+			printk(KERN_ERR "FAT: bogus directroy-entries per block"
 			       " (%u)\n", sbi->dir_entries);
-
 		brelse(bh);
 		goto out_invalid;
 	}
 
 	rootdir_sectors = sbi->dir_entries
-		* sizeof(struct vxext_dir_entry) / sb->s_blocksize;
+		* sizeof(struct msdos_dir_entry) / sb->s_blocksize;
 	sbi->data_start = sbi->dir_start + rootdir_sectors;
+	total_sectors = get_unaligned_le16(&b->sectors);
+	if (total_sectors == 0)
+		total_sectors = le32_to_cpu(b->total_sect);
 
 	total_clusters = (total_sectors - sbi->data_start) / sbi->sec_per_clus;
 
-	// check that the FAT table does not overflow
-	vxext_clusters = sbi->fat_length * sb->s_blocksize * 8 / 16;
-	total_clusters = min(total_clusters, vxext_clusters - 2);
-	if(total_clusters > MAX_FAT_VXEXT)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: count of clusters too big (%u)\n",
-			       total_clusters);
+	if (sbi->fat_bits != 32)
+		sbi->fat_bits = (total_clusters > MAX_FAT12) ? 16 : 12;
 
+	/* check that FAT table does not overflow */
+	fat_clusters = sbi->fat_length * sb->s_blocksize * 8 / sbi->fat_bits;
+	total_clusters = min(total_clusters, fat_clusters - FAT_START_ENT);
+	if (total_clusters > MAX_FAT(sb)) {
+		if (!silent)
+			printk(KERN_ERR "FAT: count of clusters too big (%u)\n",
+			       total_clusters);
 		brelse(bh);
 		goto out_invalid;
 	}
 
-	sbi->clusters = total_clusters;
+	sbi->max_cluster = total_clusters + FAT_START_ENT;
+	/* check the free_clusters, it's not necessarily correct */
+	if (sbi->free_clusters != -1 && sbi->free_clusters > total_clusters)
+		sbi->free_clusters = -1;
+	/* check the prev_free, it's not necessarily correct */
+	sbi->prev_free %= sbi->max_cluster;
+	if (sbi->prev_free < FAT_START_ENT)
+		sbi->prev_free = FAT_START_ENT;
 
 	brelse(bh);
 
-	// validity check of FAT
-	first = __vxext_access(sb, 0, -1);
-	if(first < 0)
-	{
-		error = first;
+	/* set up enough so that it can read an inode */
+	fat_hash_init(sb);
+	fat_ent_access_init(sb);
+
+	/*
+	 * The low byte of FAT's first entry must have same value with
+	 * media-field.  But in real world, too many devices is
+	 * writing wrong value.  So, removed that validity check.
+	 *
+	 * if (FAT_FIRST_ENT(sb, media) != first)
+	 */
+
+	error = -EINVAL;
+	sprintf(buf, "cp%d", sbi->options.codepage);
+	sbi->nls_disk = load_nls(buf);
+	if (!sbi->nls_disk) {
+		printk(KERN_ERR "FAT: codepage %s not found\n", buf);
 		goto out_fail;
 	}
 
-	if(VXEXT_FIRST_ENT(sb, media) != first)
-	{
-		if(!silent)
-			printk(KERN_ERR "VXEXT: invalid first entry of FAT "
-			       "(0x%x != 0x%x)\n",
-			       VXEXT_FIRST_ENT(sb, media), first);
-				   
-		goto out_invalid;
+	/* FIXME: utf8 is using iocharset for upper/lower conversion */
+	if (sbi->options.isvfat) {
+		sbi->nls_io = load_nls(sbi->options.iocharset);
+		if (!sbi->nls_io) {
+			printk(KERN_ERR "FAT: IO charset %s not found\n",
+			       sbi->options.iocharset);
+			goto out_fail;
+		}
 	}
 
 	error = -ENOMEM;
 	root_inode = new_inode(sb);
-	if(!root_inode)
+	if (!root_inode)
 		goto out_fail;
-
-	root_inode->i_ino = VXEXT_ROOT_INO;
+	root_inode->i_ino = MSDOS_ROOT_INO;
 	root_inode->i_version = 1;
-	error = vxext_read_root(root_inode);
-	if(error < 0)
+	error = fat_read_root(root_inode);
+	if (error < 0)
 		goto out_fail;
-
 	error = -ENOMEM;
 	insert_inode_hash(root_inode);
 	sb->s_root = d_alloc_root(root_inode);
-	if(!sb->s_root)
-	{
-		printk(KERN_ERR "VXEXT: get root inode failed\n");
+	if (!sb->s_root) {
+		printk(KERN_ERR "FAT: get root inode failed\n");
 		goto out_fail;
 	}
 
-	// all is as it should be */
-	printk(KERN_INFO "VFS: successfully mounted VXEXT1.0 filesystem"
-									 " from device %s.\n", sb->s_id);
+   #ifdef VXEXT_FS
+   #ifdef DEBUG
+   printk(KERN_INFO "VXEXT superblock info:\n");
+   printk(KERN_INFO "---------------------\n");
+   printk(KERN_INFO "sec_per_clus...: %d\n", sbi->sec_per_clus);
+   printk(KERN_INFO "cluster_bits...: %d\n", sbi->cluster_bits);
+   printk(KERN_INFO "cluster_size...: %d\n", sbi->cluster_size);
+   printk(KERN_INFO "fats...........: %d\n", sbi->fats);
+   printk(KERN_INFO "fat_bits.......: %d\n", sbi->fat_bits);
+   printk(KERN_INFO "fat_start......: %d\n", sbi->fat_start);
+   printk(KERN_INFO "fat_length.....: %ld\n", sbi->fat_length);
+   printk(KERN_INFO "dir_start......: %ld\n", sbi->dir_start);
+   printk(KERN_INFO "dir_entries....: %d\n", sbi->dir_entries);
+   printk(KERN_INFO "data_start.....: %ld\n", sbi->data_start);
+   printk(KERN_INFO "max_cluster....: %ld\n", sbi->max_cluster);
+   printk(KERN_INFO "root_cluster...: %ld\n", sbi->root_cluster);
+   printk(KERN_INFO "fsinfo_sector..: %ld\n", sbi->fsinfo_sector);
+   printk(KERN_INFO "prev_free......: %d\n", sbi->prev_free);
+   printk(KERN_INFO "free_clusters..: %d\n", sbi->free_clusters);
+   printk(KERN_INFO "free_clus_valid: %d\n", sbi->free_clus_valid);
+   printk(KERN_INFO "dir_per_block..: %d\n", sbi->dir_per_block);
+   printk(KERN_INFO "dir_per_block_b: %d\n", sbi->dir_per_block_bits);
+   #endif
+
+   printk(KERN_INFO "VFS: successfully mounted VXEXT1.0 filesystem from device %s.\n", sb->s_id);
+   #endif
 
 	return 0;
 
 out_invalid:
 	error = -EINVAL;
 	if (!silent)
-		printk(KERN_INFO "VFS: Can't find a valid VXEXT1.0 filesystem"
+		printk(KERN_INFO "VFS: Can't find a valid FAT filesystem"
 		       " on dev %s.\n", sb->s_id);
 
 out_fail:
 	if (root_inode)
 		iput(root_inode);
-
+	if (sbi->nls_io)
+		unload_nls(sbi->nls_io);
+	if (sbi->nls_disk)
+		unload_nls(sbi->nls_disk);
+	if (sbi->options.iocharset != fat_default_iocharset)
+		kfree(sbi->options.iocharset);
 	sb->s_fs_info = NULL;
 	kfree(sbi);
 	return error;
 }
 
-int vxext_statfs(struct dentry *dentry, struct kstatfs *buf)
+#ifndef VXEXT_FS
+EXPORT_SYMBOL_GPL(fat_fill_super);
+#endif
+
+/*
+ * helper function for fat_flush_inodes.  This writes both the inode
+ * and the file data blocks, waiting for in flight data blocks before
+ * the start of the call.  It does not wait for any io started
+ * during the call
+ */
+static int writeback_inode(struct inode *inode)
 {
-  struct vxext_sb_info *sbi = VXEXT_SB(dentry->d_sb);
-  struct super_block *sb = dentry->d_sb;
-	int free, nr, ret;
-       
-	if(sbi->free_clusters != -1)
-	{
-		free = sbi->free_clusters;
-	}
-	else
-	{
-		vxlock_fat(sb);
-		
-		if(sbi->free_clusters != -1)
-		{
-			free = sbi->free_clusters;
-		}
-		else
-		{
-			free = 0;
-			for(nr = 2; nr < sbi->clusters + 2; nr++)
-			{
-				ret = vxext_access(sb, nr, -1);
-				if(ret < 0)
-				{
-					vxunlock_fat(sb);
-					return ret;
-				}
-				else if(ret == FAT_ENT_FREE)
-				{
-					free++;
-				}
-			}
 
-			sbi->free_clusters = free;
-		}
-
-		vxunlock_fat(sb);
-	}
-
-	buf->f_type = sb->s_magic;
-	buf->f_bsize = sbi->cluster_size;
-	buf->f_blocks = sbi->clusters;
-	buf->f_bfree = free;
-	buf->f_bavail = free;
-	buf->f_namelen = VXEXT_NAMELEN; // VXEXT 1.0 support 40 chars filenames
-
-	return 0;
+	int ret;
+	struct address_space *mapping = inode->i_mapping;
+	struct writeback_control wbc = {
+	       .sync_mode = WB_SYNC_NONE,
+	      .nr_to_write = 0,
+	};
+	/* if we used WB_SYNC_ALL, sync_inode waits for the io for the
+	* inode to finish.  So WB_SYNC_NONE is sent down to sync_inode
+	* and filemap_fdatawrite is used for the data blocks
+	*/
+	ret = sync_inode(inode, &wbc);
+	if (!ret)
+	       ret = filemap_fdatawrite(mapping);
+	return ret;
 }
 
-static int vxext_writepage(struct page *page, struct writeback_control *wbc)
+/*
+ * write data and metadata corresponding to i1 and i2.  The io is
+ * started but we do not wait for any of it to finish.
+ *
+ * filemap_flush is used for the block device, so if there is a dirty
+ * page for a block already in flight, we will not wait and start the
+ * io over again
+ */
+int fat_flush_inodes(struct super_block *sb, struct inode *i1, struct inode *i2)
 {
-	return block_write_full_page(page,vxext_get_block, wbc);
-}
-
-static int vxext_readpage(struct file *file, struct page *page)
-{
-	return block_read_full_page(page,vxext_get_block);
-}
-
-static int vxext_write_begin(struct file *file, struct address_space *mapping,
-                             loff_t pos, unsigned len, unsigned flags,
-                             struct page **pagep, void **fsdata)
-{
-  *pagep = NULL;
-  return cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
-                          fat_get_block,
-                          &VXEXT_I(mapping->host)->mmu_private);
-}
-
-static int vxext_write_end(struct file *file, struct address_space *mapping,
-                           loff_t pos, unsigned len, unsigned copied,
-                           struct page *pagep, void *fsdata)
-{
-  struct inode *inode = mapping->host;
-  int err;
-  err = generic_write_end(file, mapping, pos, len, copied, pagep, fsdata);
-  if (!(err < 0) && !(MSDOS_I(inode)->i_attrs & ATTR_ARCH)) {
-    inode->i_mtime = inode->i_ctime = CURRENT_TIME_SEC;
-    VXEXT_I(inode)->i_attrs |= ATTR_ARCH;
-    mark_inode_dirty(inode);
-  }
-  return err;
-}
-
-static sector_t _vxext_bmap(struct address_space *mapping, sector_t block)
-{
-	return generic_block_bmap(mapping,block,vxext_get_block);
-}
-
-static struct address_space_operations vxext_aops =
-{
-	.readpage				= vxext_readpage,
-	.writepage			= vxext_writepage,
-	.sync_page			= block_sync_page,
-	.write_begin	  = vxext_write_begin,
-	.write_end		  = vxext_write_end,
-	.bmap						= _vxext_bmap
-};
-
-// doesn't deal with root inode
-static int vxext_fill_inode(struct inode *inode, struct vxext_dir_entry *de)
-{
-	struct super_block *sb = inode->i_sb;
-	struct vxext_sb_info *sbi = VXEXT_SB(sb);
-	int error;
-
-	VXEXT_I(inode)->file_cluster = VXEXT_I(inode)->disk_cluster = 0;
-	VXEXT_I(inode)->i_pos = 0;
-	inode->i_uid = sbi->options.fs_uid;
-	inode->i_gid = sbi->options.fs_gid;
-	inode->i_version++;
-	inode->i_generation = get_seconds();
-	
-	if((de->attr & ATTR_DIR) && !IS_FREE(de->name))
-	{
-		inode->i_generation &= ~1;
-		inode->i_mode = VXEXT_MKMODE(de->attr,
-			S_IRWXUGO & ~sbi->options.fs_dmask) | S_IFDIR;
-		inode->i_op = sbi->dir_ops;
-		inode->i_fop = &vxext_dir_operations;
-
-		VXEXT_I(inode)->i_start = CF_LE_W(de->start);
-
-		VXEXT_I(inode)->i_logstart = VXEXT_I(inode)->i_start;
-		error = vxext_calc_dir_size(inode);
-
-		if(error < 0)
-			return error;
-
-		VXEXT_I(inode)->mmu_private = inode->i_size;
-
-		inode->i_nlink = vxext_subdirs(inode);
-	}
-	else
-	{ 
-		// not a directory
-		inode->i_generation |= 1;
-		inode->i_mode = VXEXT_MKMODE(de->attr, S_IRWXUGO
-		    & ~sbi->options.fs_fmask) | S_IFREG;
-		VXEXT_I(inode)->i_start = CF_LE_W(de->start);
-
-		VXEXT_I(inode)->i_logstart = VXEXT_I(inode)->i_start;
-		inode->i_size = CF_LE_L(de->size);
-	        inode->i_op = &vxext_file_inode_operations;
-	        inode->i_fop = &vxext_file_operations;
-		inode->i_mapping->a_ops = &vxext_aops;
-		VXEXT_I(inode)->mmu_private = inode->i_size;
-	}
-
-	VXEXT_I(inode)->i_attrs = de->attr & ATTR_UNUSED;
-	inode->i_blocks = ((inode->i_size + (sbi->cluster_size - 1))
-										 & ~((loff_t)sbi->cluster_size - 1)) >> 9;
-	inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
-		vxext_date_dos2unix(CF_LE_W(de->time),CF_LE_W(de->date));
-
-	inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec = 0;
-	inode->i_ctime.tv_sec = inode->i_mtime.tv_sec;
-	inode->i_ctime.tv_nsec = 0;
-
-	return 0;
-}
-
-int vxext_write_inode(struct inode *inode, int wait)
-{
-	struct super_block *sb = inode->i_sb;
-	struct buffer_head *bh;
-	struct vxext_dir_entry *raw_entry;
-	loff_t i_pos;
-	int err = 0;
-
-retry:
-	i_pos = VXEXT_I(inode)->i_pos;
-	if(inode->i_ino == VXEXT_ROOT_INO || !i_pos)
-	{
+	int ret = 0;
+	if (!MSDOS_SB(sb)->options.flush)
 		return 0;
+	if (i1)
+		ret = writeback_inode(i1);
+	if (!ret && i2)
+		ret = writeback_inode(i2);
+	if (!ret) {
+		struct address_space *mapping = sb->s_bdev->bd_inode->i_mapping;
+		ret = filemap_flush(mapping);
 	}
+	return ret;
+}
+#ifndef VXEXT_FS
+EXPORT_SYMBOL_GPL(fat_flush_inodes);
+#endif
 
-	lock_kernel();
-	if(!(bh = sb_bread(sb, i_pos >> VXEXT_SB(sb)->dir_per_block_bits)))
-	{
-		printk(KERN_ERR "VXEXT: unable to read inode block "
-		       "for updating (i_pos %lld)\n", i_pos);
+#ifndef VXEXT_FS
+static int __init init_fat_fs(void)
+{
+	int err;
 
-		err = -EIO;
-		goto out;
-	}
+	err = fat_cache_init();
+	if (err)
+		return err;
 
-	spin_lock(&vxext_inode_lock);
-	if(i_pos != VXEXT_I(inode)->i_pos)
-	{
-		spin_unlock(&vxext_inode_lock);
-		brelse(bh);
-		unlock_kernel();
-		goto retry;
-	}
+	err = fat_init_inodecache();
+	if (err)
+		goto failed;
 
-	raw_entry = &((struct vxext_dir_entry *) (bh->b_data))
-							  [i_pos & (VXEXT_SB(sb)->dir_per_block - 1)];
+	return 0;
 
-	if(S_ISDIR(inode->i_mode))
-	{
-		raw_entry->attr = ATTR_DIR;
-		raw_entry->size = 0;
-	}
-	else
-	{
-		raw_entry->attr = ATTR_NONE;
-		raw_entry->size = CT_LE_L(inode->i_size);
-	}
-	
-	raw_entry->attr |= VXEXT_MKATTR(inode->i_mode) |
-										 VXEXT_I(inode)->i_attrs;
-	raw_entry->start = CT_LE_W(VXEXT_I(inode)->i_logstart);
-	vxext_date_unix2dos(inode->i_mtime.tv_sec,&raw_entry->time,&raw_entry->date);
-	raw_entry->time = CT_LE_W(raw_entry->time);
-	raw_entry->date = CT_LE_W(raw_entry->date);
-	spin_unlock(&vxext_inode_lock);
-	mark_buffer_dirty(bh);
-	if(wait)
-		err = sync_dirty_buffer(bh);
-	brelse(bh);
-
-out:
-	unlock_kernel();
+failed:
+	fat_cache_destroy();
 	return err;
 }
 
-int vxext_notify_change(struct dentry * dentry, struct iattr * attr)
+static void __exit exit_fat_fs(void)
 {
-	struct vxext_sb_info *sbi = VXEXT_SB(dentry->d_sb);
-	struct inode *inode = dentry->d_inode;
-	int mask, error = 0;
-
-	lock_kernel();
-
-	// FAT cannot truncate to a longer file
-	if (attr->ia_valid & ATTR_SIZE)
-	{
-		if (attr->ia_size > inode->i_size)
-		{
-			error = -EPERM;
-			goto out;
-		}
-	}
-
-	error = inode_change_ok(inode, attr);
-	if(error)
-	{
-		if(sbi->options.quiet)
-			error = 0;
- 		goto out;
-	}
-
-	if(((attr->ia_valid & ATTR_UID) && 
-	    (attr->ia_uid != sbi->options.fs_uid)) ||
-	  ((attr->ia_valid & ATTR_GID) && 
-	    (attr->ia_gid != sbi->options.fs_gid)) ||
-	   ((attr->ia_valid & ATTR_MODE) &&
-	    (attr->ia_mode & ~VXEXT_VALID_MODE)))
-	{
-		error = -EPERM;
-	}
-
-	if(error)
-	{
-		if(sbi->options.quiet)  
-			error = 0;
-		goto out;
-	}
-
-	error = inode_setattr(inode, attr);
-	if(error)
-		goto out;
-
-	if(S_ISDIR(inode->i_mode))
-		mask = sbi->options.fs_dmask;
-	else
-		mask = sbi->options.fs_fmask;
-	inode->i_mode &= S_IFMT | (S_IRWXUGO & ~mask);
-
-out:
-	unlock_kernel();
-	return error;
+	fat_cache_destroy();
+	fat_destroy_inodecache();
 }
+
+module_init(init_fat_fs)
+module_exit(exit_fat_fs)
+
+MODULE_LICENSE("GPL");
+#else
+#include "vxext.c"
+#endif

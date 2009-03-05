@@ -1,9 +1,18 @@
 ---------------------------------------------------------
 VXEXT-FS - VxWorks extended DOS filesystem implementation
 ---------------------------------------------------------
-// vim:set ts=2 nowrap:
-
 $Id$
+
+2009-03-05  Jens Langner <Jens.Langner@light-speed.de>
+
+  * misc: bumped version to 2.0 as this is a complete rewrite
+    from scratch.
+  * misc: rewritten the whole file system driver from scratch
+    and adapted it to the very latest FAT/MSDOS sources found
+    in kernel 2.6.27.11+. Now any further porting should be a
+    bit easier because the new implementation uses more or
+    less the original FAT/MSDOS sources of the Linux kernel
+    with only minor changes applied.
 
 2008-10-06  Jens Langner <Jens.Langner@light-speed.de>
 
