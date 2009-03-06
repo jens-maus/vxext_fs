@@ -130,8 +130,8 @@ int fat_generic_ioctl(struct inode *inode, struct file *filp,
 		 * out the RO attribute for checking by the security
 		 * module, just because it maps to a file mode.
 		 */
-		//err = security_inode_setattr(filp->f_path.dentry, &ia);
-		err = security_inode_setattr(filp->f_path.dentry, filp->f_path.mnt, &ia);
+		err = security_inode_setattr(filp->f_path.dentry, &ia);
+		//err = security_inode_setattr(filp->f_path.dentry, filp->f_path.mnt, &ia);
 		if (err)
 			goto up;
 
