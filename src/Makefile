@@ -60,4 +60,6 @@ clean:
 	rm -f *.mod.c
 	rm -f .*.cmd
 	rm -f Module.symvers
+	rm -f Module.markers
+	rm -f modules.order
 	rm -rf .tmp_versions
