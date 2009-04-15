@@ -158,7 +158,13 @@ struct fat_boot_sector {
 	__le32	root_cluster;	/* first cluster in root directory */
 	__le16	info_sector;	/* filesystem info sector */
 	__le16	backup_boot;	/* backup boot sector */
+   #if defined(VXEXT_FS)
+   __le16   reserved2; /* Unused */
+   __le16   sec_per_clus2; /* VXEXT stores the real sectors/clusters here */
+	__le16	reserved3[4];	/* Unused */
+   #else
 	__le16	reserved2[6];	/* Unused */
+   #endif
 };
 
 struct fat_boot_fsinfo {

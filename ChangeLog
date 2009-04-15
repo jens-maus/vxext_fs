@@ -3,6 +3,12 @@ VXEXT-FS - VxWorks extended DOS filesystem implementation
 ---------------------------------------------------------
 $Id$
 
+2009-04-15  Jens Langner <Jens.Langner@light-speed.de>
+
+  * inode.c: fixed a bug in the sec_per_clus calculation by
+    extracting the value from a reserved area of the boot sector
+    instead of calculating it dynamically.
+
 2009-03-05  Jens Langner <Jens.Langner@light-speed.de>
 
   * misc: bumped version to 2.0 as this is a complete rewrite

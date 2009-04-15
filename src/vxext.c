@@ -668,7 +668,7 @@ static void __exit exit_vxext_fs(void)
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jens Langner <Jens.Langner@light-speed.de>");
 MODULE_DESCRIPTION("VxWorks extended DOS filesystem support");
-MODULE_VERSION("2.0");
+MODULE_VERSION("2.1");
 
 module_init(init_vxext_fs)
 module_exit(exit_vxext_fs)

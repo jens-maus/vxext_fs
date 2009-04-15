@@ -1283,6 +1283,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent,
    printk(KERN_INFO "system_id.........: %s\n",    b->system_id);
    printk(KERN_INFO "sector_size.......: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->sector_size)));
    printk(KERN_INFO "sec_per_clus......: %d\n",   b->sec_per_clus);
+   printk(KERN_INFO "sec_per_clus2.....: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->sec_per_clus2)));
    printk(KERN_INFO "reserved sectors..: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->reserved)));
    printk(KERN_INFO "# of FATs.........: %d\n",   b->fats);
    printk(KERN_INFO "max # of root dirs: %d\n",   le16_to_cpu(get_unaligned((__le16 *)&b->dir_entries)));
@@ -1292,7 +1293,7 @@ int fat_fill_super(struct super_block *sb, void *data, int silent,
    printk(KERN_INFO "# of sectors/track: %d\n",    le16_to_cpu(get_unaligned((__le16 *)&b->secs_track)));
    printk(KERN_INFO "# of heads........: %d\n",    le16_to_cpu(get_unaligned((__le16 *)&b->heads)));
    printk(KERN_INFO "# of hidden sect..: %d\n",    le32_to_cpu(b->hidden));
-   printk(KERN_INFO "long total sectors: %d\n",   le32_to_cpu(b->total_sect));
+   printk(KERN_INFO "# total sectors...: %d\n",   le32_to_cpu(b->total_sect));
    #endif
 
 	if (!b->reserved) {
@@ -1346,26 +1347,16 @@ int fat_fill_super(struct super_block *sb, void *data, int silent,
       goto out_invalid;
    }
    
-   // on some VXEXT 1.0 filesystems the sectors_per_cluster field is set to
-   // zero to signal that the sectors per cluster are simply
-   // max_sectors / 65535 - therefore we check that case here
-   if(b->sec_per_clus != 0)
-      sbi->sec_per_clus = b->sec_per_clus;
+   // on VXEXT the sectors per cluster information is within a reserved
+   // area. Here we extract it accordingly if the sec_per_clus in the
+   // boot sectors is zero
+   if(b->sec_per_clus == 0)
+      sbi->sec_per_clus = b->sec_per_clus2;
    else
-   {
-      // calculate the sectors per cluster dynamically out of the total
-      // sectors the partition has. This somehow breaks the FAT16 DOS
-      // specification but is exactly what Wind River does for filling
-      // up the whole disk with having more than 2GB data on the disk.
-      // Please note that if there is any remainder out of the division,
-      // then the sectors per cluster size is increased by one, rounding
-      // up to a "safe" cluster size.
-      sbi->sec_per_clus = total_sectors / FAT_MAX_DIR_ENTRIES;
-      if(sbi->sec_per_clus % FAT_MAX_DIR_ENTRIES)
-         sbi->sec_per_clus++;
-   }
+      sbi->sec_per_clus = b->sec_per_clus;
 
-   if(sbi->sec_per_clus == 0)
+   // check if the sec_per_clus number is valid
+   if((sbi->sec_per_clus * FAT_MAX_DIR_ENTRIES) < total_sectors)
    {
      if(!silent)
        printk(KERN_ERR "VXEXT: bogus sectors per cluster %u\n",
