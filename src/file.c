@@ -36,19 +36,17 @@
  *  regular file handling primitives for fat-based filesystems
  */
 
-#include "vxext_fs.h"
-
 #include <linux/capability.h>
 #include <linux/module.h>
 #include <linux/mount.h>
 #include <linux/time.h>
-#include <linux/msdos_fs.h>
 #include <linux/buffer_head.h>
 #include <linux/writeback.h>
 #include <linux/backing-dev.h>
 #include <linux/blkdev.h>
 #include <linux/fsnotify.h>
 #include <linux/security.h>
+#include "fat.h"
 
 int fat_generic_ioctl(struct inode *inode, struct file *filp,
 		      unsigned int cmd, unsigned long arg)
@@ -61,10 +59,9 @@ int fat_generic_ioctl(struct inode *inode, struct file *filp,
 	{
 		u32 attr;
 
-		if (inode->i_ino == MSDOS_ROOT_INO)
-			attr = ATTR_DIR;
-		else
-			attr = fat_attr(inode);
+		mutex_lock(&inode->i_mutex);
+		attr = fat_make_attrs(inode);
+		mutex_unlock(&inode->i_mutex);
 
 		return put_user(attr, user_attr);
 	}
@@ -94,20 +91,16 @@ int fat_generic_ioctl(struct inode *inode, struct file *filp,
 		/* Merge in ATTR_VOLUME and ATTR_DIR */
 		attr |= (MSDOS_I(inode)->i_attrs & ATTR_VOLUME) |
 			(is_dir ? ATTR_DIR : 0);
-		oldattr = fat_attr(inode);
+		oldattr = fat_make_attrs(inode);
 
 		/* Equivalent to a chmod() */
 		ia.ia_valid = ATTR_MODE | ATTR_CTIME;
 		ia.ia_ctime = current_fs_time(inode->i_sb);
-		if (is_dir) {
-			ia.ia_mode = MSDOS_MKMODE(attr,
-				S_IRWXUGO & ~sbi->options.fs_dmask)
-				| S_IFDIR;
-		} else {
-			ia.ia_mode = MSDOS_MKMODE(attr,
-				(S_IRUGO | S_IWUGO | (inode->i_mode & S_IXUGO))
-				& ~sbi->options.fs_fmask)
-				| S_IFREG;
+		if (is_dir)
+			ia.ia_mode = fat_make_mode(sbi, attr, S_IRWXUGO);
+		else {
+			ia.ia_mode = fat_make_mode(sbi, attr,
+				S_IRUGO | S_IWUGO | (inode->i_mode & S_IXUGO));
 		}
 
 		/* The root directory has no attributes */
@@ -148,7 +141,7 @@ int fat_generic_ioctl(struct inode *inode, struct file *filp,
 				inode->i_flags &= S_IMMUTABLE;
 		}
 
-		MSDOS_I(inode)->i_attrs = attr & ATTR_UNUSED;
+		fat_save_attrs(inode, attr);
 		mark_inode_dirty(inode);
 up:
 		mnt_drop_write(filp->f_path.mnt);
@@ -321,7 +314,7 @@ static int fat_sanitize_mode(const struct msdos_sb_info *sbi,
 
 	/*
 	 * Note, the basic check is already done by a caller of
-	 * (attr->ia_mode & ~MSDOS_VALID_MODE)
+	 * (attr->ia_mode & ~FAT_VALID_MODE)
 	 */
 
 	if (S_ISREG(inode->i_mode))
@@ -334,11 +327,18 @@ static int fat_sanitize_mode(const struct msdos_sb_info *sbi,
 	/*
 	 * Of the r and x bits, all (subject to umask) must be present. Of the
 	 * w bits, either all (subject to umask) or none must be present.
+	 *
+	 * If fat_mode_can_hold_ro(inode) is false, can't change w bits.
 	 */
 	if ((perm & (S_IRUGO | S_IXUGO)) != (inode->i_mode & (S_IRUGO|S_IXUGO)))
 		return -EPERM;
-	if ((perm & S_IWUGO) && ((perm & S_IWUGO) != (S_IWUGO & ~mask)))
-		return -EPERM;
+	if (fat_mode_can_hold_ro(inode)) {
+		if ((perm & S_IWUGO) && ((perm & S_IWUGO) != (S_IWUGO & ~mask)))
+			return -EPERM;
+	} else {
+		if ((perm & S_IWUGO) != (S_IWUGO & ~mask))
+			return -EPERM;
+	}
 
 	*mode_ptr &= S_IFMT | perm;
 
@@ -361,13 +361,15 @@ static int fat_allow_set_time(struct msdos_sb_info *sbi, struct inode *inode)
 }
 
 #define TIMES_SET_FLAGS	(ATTR_MTIME_SET | ATTR_ATIME_SET | ATTR_TIMES_SET)
+/* valid file mode bits */
+#define FAT_VALID_MODE	(S_IFREG | S_IFDIR | S_IRWXUGO)
 
 int fat_setattr(struct dentry *dentry, struct iattr *attr)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(dentry->d_sb);
 	struct inode *inode = dentry->d_inode;
-	int error = 0;
 	unsigned int ia_valid;
+	int error;
 
 	/*
 	 * Expand the file. Since inode_setattr() updates ->i_size
@@ -403,7 +405,7 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 	    ((attr->ia_valid & ATTR_GID) &&
 	     (attr->ia_gid != sbi->options.fs_gid)) ||
 	    ((attr->ia_valid & ATTR_MODE) &&
-	     (attr->ia_mode & ~MSDOS_VALID_MODE)))
+	     (attr->ia_mode & ~FAT_VALID_MODE)))
 		error = -EPERM;
 
 	if (error) {
@@ -421,7 +423,8 @@ int fat_setattr(struct dentry *dentry, struct iattr *attr)
 			attr->ia_valid &= ~ATTR_MODE;
 	}
 
-	error = inode_setattr(inode, attr);
+	if (attr->ia_valid)
+		error = inode_setattr(inode, attr);
 out:
 	return error;
 }

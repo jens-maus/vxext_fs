@@ -38,11 +38,9 @@
  *  May 1999. AV. Fixed the bogosity with FAT32 (read "FAT28"). Fscking lusers.
  */
 
-#include "vxext_fs.h"
-
 #include <linux/fs.h>
-#include <linux/msdos_fs.h>
 #include <linux/buffer_head.h>
+#include "fat.h"
 
 /* this must be > 0. */
 #define FAT_MAX_CACHE	8
@@ -336,10 +334,12 @@ static int fat_bmap_cluster(struct inode *inode, int cluster)
 }
 
 int fat_bmap(struct inode *inode, sector_t sector, sector_t *phys,
-	     unsigned long *mapped_blocks)
+	     unsigned long *mapped_blocks, int create)
 {
 	struct super_block *sb = inode->i_sb;
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+	const unsigned long blocksize = sb->s_blocksize;
+	const unsigned char blocksize_bits = sb->s_blocksize_bits;
 	sector_t last_block;
 	int cluster, offset;
 
@@ -352,10 +352,21 @@ int fat_bmap(struct inode *inode, sector_t sector, sector_t *phys,
 		}
 		return 0;
 	}
-	last_block = (MSDOS_I(inode)->mmu_private + (sb->s_blocksize - 1))
-		>> sb->s_blocksize_bits;
-	if (sector >= last_block)
-		return 0;
+
+	last_block = (i_size_read(inode) + (blocksize - 1)) >> blocksize_bits;
+	if (sector >= last_block) {
+		if (!create)
+			return 0;
+
+		/*
+		 * ->mmu_private can access on only allocation path.
+		 * (caller must hold ->i_mutex)
+		 */
+		last_block = (MSDOS_I(inode)->mmu_private + (blocksize - 1))
+			>> blocksize_bits;
+		if (sector >= last_block)
+			return 0;
+	}
 
    #ifdef VXEXT_FS
 	cluster = ((unsigned long)sector) / sbi->sec_per_clus;

@@ -36,13 +36,11 @@
  *  Rewritten for constant inumbers 1999 by Al Viro
  */
 
-#include "vxext_fs.h"
-
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/buffer_head.h>
-#include <linux/msdos_fs.h>
 #include <linux/smp_lock.h>
+#include "fat.h"
 
 // normally this function is used to analyze filenames and check
 // if they conform. But as there are no real conventions for filenames
@@ -148,33 +146,36 @@ static struct dentry *vxext_lookup(struct inode *dir, struct dentry *dentry,
 {
 	struct super_block *sb = dir->i_sb;
 	struct fat_slot_info sinfo;
-	struct inode *inode = NULL;
-	int res;
-
-	dentry->d_op = &vxext_dentry_operations;
+	struct inode *inode;
+	int err;
 
 	lock_super(sb);
-	res = vxext_find(dir, dentry->d_name.name, dentry->d_name.len, &sinfo);
-	if (res == -ENOENT)
-		goto add;
-	if (res < 0)
-		goto out;
+	err = vxext_find(dir, dentry->d_name.name, dentry->d_name.len, &sinfo);
+	if (err) {
+		if (err == -ENOENT) {
+			inode = NULL;
+			goto out;
+		}
+		goto error;
+	}
+
 	inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
 	brelse(sinfo.bh);
 	if (IS_ERR(inode)) {
-		res = PTR_ERR(inode);
-		goto out;
+		err = PTR_ERR(inode);
+		goto error;
 	}
-add:
-	res = 0;
+out:
+	unlock_super(sb);
+	dentry->d_op = &vxext_dentry_operations;
 	dentry = d_splice_alias(inode, dentry);
 	if (dentry)
 		dentry->d_op = &vxext_dentry_operations;
-out:
+	return dentry;
+
+error:
 	unlock_super(sb);
-	if (!res)
-		return dentry;
-	return ERR_PTR(res);
+	return ERR_PTR(err);
 }
 
 /***** Creates a directory entry (name is already formatted). */
@@ -194,7 +195,7 @@ static int vxext_add_entry(struct inode *dir, const unsigned char *name,
    #ifndef VXEXT_FS
 	de.lcase = 0;
    #endif
-	fat_date_unix2dos(ts->tv_sec, &time, &date, sbi->options.tz_utc);
+	fat_time_unix2fat(sbi, ts, &time, &date, NULL);
    #ifndef VXEXT_FS
 	de.cdate = de.adate = 0;
 	de.ctime = 0;
@@ -668,7 +669,7 @@ static void __exit exit_vxext_fs(void)
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jens Langner <Jens.Langner@light-speed.de>");
 MODULE_DESCRIPTION("VxWorks extended DOS filesystem support");
-MODULE_VERSION("2.1");
+MODULE_VERSION("2.2");
 
 module_init(init_vxext_fs)
 module_exit(exit_vxext_fs)

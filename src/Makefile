@@ -34,7 +34,7 @@ ifneq ($(KERNELRELEASE),)
 
 	vxext-y := cache.o dir.o fatent.o file.o inode.o misc.o
 
-	#EXTRA_CFLAGS := -DDEBUG
+	EXTRA_CFLAGS := -DVXEXT_FS #-DDEBUG
 
 else
 

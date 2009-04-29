@@ -28,14 +28,11 @@
 
 ***************************************************************************/
 
-#ifndef _LINUX_VXEXT_FS_H
-#define _LINUX_MSDOS_FS_H
-#define _LINUX_VXEXT_FS_H
+#ifndef _FAT_H
+#define _FAT_H
 
 #include <linux/magic.h>
 #include <asm/byteorder.h>
-
-#define VXEXT_FS 1
 
 /*
  * The MS-DOS filesystem constants/structures
@@ -236,7 +233,8 @@ struct fat_mount_options {
 		 flush:1,	  /* write things quickly */
 		 nocase:1,	  /* Does this need case conversion? 0=need case conversion*/
 		 usefree:1,	  /* Use free_clusters for FAT32 */
-		 tz_utc:1;	  /* Filesystem timestamps are in UTC */
+		 tz_utc:1,	  /* Filesystem timestamps are in UTC */
+		 rodir:1;     /* allow ATTR_RO for directory */
 };
 
 #define FAT_HASH_BITS	8
@@ -316,12 +314,60 @@ static inline struct msdos_inode_info *MSDOS_I(struct inode *inode)
 	return container_of(inode, struct msdos_inode_info, vfs_inode);
 }
 
-/* Return the FAT attribute byte for this inode */
-static inline u8 fat_attr(struct inode *inode)
+/*
+ * If ->i_mode can't hold S_IWUGO (i.e. ATTR_RO), we use ->i_attrs to
+ * save ATTR_RO instead of ->i_mode.
+ *
+ * If it's directory and !sbi->options.rodir, ATTR_RO isn't read-only
+ * bit, it's just used as flag for app.
+ */
+static inline int fat_mode_can_hold_ro(struct inode *inode)
 {
-	return ((inode->i_mode & S_IWUGO) ? ATTR_NONE : ATTR_RO) |
-		(S_ISDIR(inode->i_mode) ? ATTR_DIR : ATTR_NONE) |
-		MSDOS_I(inode)->i_attrs;
+	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
+	mode_t mask;
+
+	if (S_ISDIR(inode->i_mode)) {
+		if (!sbi->options.rodir)
+			return 0;
+		mask = ~sbi->options.fs_dmask;
+	} else
+		mask = ~sbi->options.fs_fmask;
+
+	if (!(mask & S_IWUGO))
+		return 0;
+	return 1;
+}
+
+/* Convert attribute bits and a mask to the UNIX mode. */
+static inline mode_t fat_make_mode(struct msdos_sb_info *sbi,
+				   u8 attrs, mode_t mode)
+{
+	if (attrs & ATTR_RO && !((attrs & ATTR_DIR) && !sbi->options.rodir))
+		mode &= ~S_IWUGO;
+
+	if (attrs & ATTR_DIR)
+		return (mode & ~sbi->options.fs_dmask) | S_IFDIR;
+	else
+		return (mode & ~sbi->options.fs_fmask) | S_IFREG;
+}
+
+/* Return the FAT attribute byte for this inode */
+static inline u8 fat_make_attrs(struct inode *inode)
+{
+	u8 attrs = MSDOS_I(inode)->i_attrs;
+	if (S_ISDIR(inode->i_mode))
+		attrs |= ATTR_DIR;
+	if (fat_mode_can_hold_ro(inode) && !(inode->i_mode & S_IWUGO))
+		attrs |= ATTR_RO;
+	return attrs;
+}
+
+static inline void fat_save_attrs(struct inode *inode, u8 attrs)
+{
+	if (fat_mode_can_hold_ro(inode))
+		MSDOS_I(inode)->i_attrs = attrs & ATTR_UNUSED;
+	else
+		MSDOS_I(inode)->i_attrs = attrs & (ATTR_UNUSED | ATTR_RO);
 }
 
 static inline unsigned char fat_checksum(const __u8 *name)
@@ -378,7 +424,7 @@ extern void fat_cache_inval_inode(struct inode *inode);
 extern int fat_get_cluster(struct inode *inode, int cluster,
 			   int *fclus, int *dclus);
 extern int fat_bmap(struct inode *inode, sector_t sector, sector_t *phys,
-		    unsigned long *mapped_blocks);
+		    unsigned long *mapped_blocks, int create);
 
 /* fat/dir.c */
 extern const struct file_operations fat_dir_operations;
@@ -464,16 +510,21 @@ extern int fat_fill_super(struct super_block *sb, void *data, int silent,
 extern int fat_flush_inodes(struct super_block *sb, struct inode *i1,
 		            struct inode *i2);
 /* fat/misc.c */
-extern void fat_fs_panic(struct super_block *s, const char *fmt, ...);
+extern void fat_fs_panic(struct super_block *s, const char *fmt, ...)
+	__attribute__ ((format (printf, 2, 3))) __cold;
 extern void fat_clusters_flush(struct super_block *sb);
 extern int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster);
-extern int date_dos2unix(unsigned short time, unsigned short date, int tz_utc);
-extern void fat_date_unix2dos(int unix_date, __le16 *time, __le16 *date,
-			      int tz_utc);
+extern void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec *ts,
+			      __le16 __time, __le16 __date, u8 time_cs);
+extern void fat_time_unix2fat(struct msdos_sb_info *sbi, struct timespec *ts,
+			      __le16 *time, __le16 *date, u8 *time_cs);
 extern int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs);
 
 int fat_cache_init(void);
 void fat_cache_destroy(void);
+
+/* helper for printk */
+typedef unsigned long long llu;
 
 #endif /* __KERNEL__ */
 
