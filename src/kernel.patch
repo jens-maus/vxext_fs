@@ -1,7 +1,7 @@
-diff -urNBb linux-2.6.23-org/Documentation/filesystems/00-INDEX linux-2.6.23/Documentation/filesystems/00-INDEX
---- linux-2.6.23-org/Documentation/filesystems/00-INDEX	2007-10-09 22:31:38.000000000 +0200
-+++ linux-2.6.23/Documentation/filesystems/00-INDEX	2007-10-24 12:50:46.000000000 +0200
-@@ -88,6 +88,8 @@
+diff -urNBb --exclude='*.orig' linux-2.6.28.10-org/Documentation/filesystems/00-INDEX linux-2.6.28.10/Documentation/filesystems/00-INDEX
+--- linux-2.6.28.10-org/Documentation/filesystems/00-INDEX	2009-05-02 20:54:43.000000000 +0200
++++ linux-2.6.28.10/Documentation/filesystems/00-INDEX	2009-05-05 19:27:11.000000000 +0200
+@@ -108,6 +108,8 @@
  	- info on the ufs filesystem.
  vfat.txt
  	- info on using the VFAT filesystem used in Windows NT and Windows 95
@@ -10,10 +10,10 @@ diff -urNBb linux-2.6.23-org/Documentation/filesystems/00-INDEX linux-2.6.23/Doc
  vfs.txt
  	- overview of the Virtual File System
  xfs.txt
-diff -urNBb linux-2.6.23-org/fs/Kconfig linux-2.6.23/fs/Kconfig
---- linux-2.6.23-org/fs/Kconfig	2007-10-09 22:31:38.000000000 +0200
-+++ linux-2.6.23/fs/Kconfig	2007-10-24 12:49:08.000000000 +0200
-@@ -1514,6 +1514,36 @@
+diff -urNBb --exclude='*.orig' linux-2.6.28.10-org/fs/Kconfig linux-2.6.28.10/fs/Kconfig
+--- linux-2.6.28.10-org/fs/Kconfig	2009-05-02 20:54:43.000000000 +0200
++++ linux-2.6.28.10/fs/Kconfig	2009-05-05 19:27:11.000000000 +0200
+@@ -1122,6 +1122,36 @@
  	  Y here.  This will result in _many_ additional debugging messages to be
  	  written to the system log.
  
@@ -49,14 +49,14 @@ diff -urNBb linux-2.6.23-org/fs/Kconfig linux-2.6.23/fs/Kconfig
 +
  endmenu
  
- menu "Network File Systems"
-diff -urNBb linux-2.6.23-org/fs/Makefile linux-2.6.23/fs/Makefile
---- linux-2.6.23-org/fs/Makefile	2007-10-09 22:31:38.000000000 +0200
-+++ linux-2.6.23/fs/Makefile	2007-10-24 12:49:08.000000000 +0200
-@@ -79,6 +79,7 @@
+ menuconfig NETWORK_FILESYSTEMS
+diff -urNBb --exclude='*.orig' linux-2.6.28.10-org/fs/Makefile linux-2.6.28.10/fs/Makefile
+--- linux-2.6.28.10-org/fs/Makefile	2009-05-02 20:54:43.000000000 +0200
++++ linux-2.6.28.10/fs/Makefile	2009-05-05 19:28:23.000000000 +0200
+@@ -81,6 +81,7 @@
+ obj-$(CONFIG_CODA_FS)		+= coda/
+ obj-$(CONFIG_MINIX_FS)		+= minix/
  obj-$(CONFIG_FAT_FS)		+= fat/
- obj-$(CONFIG_MSDOS_FS)		+= msdos/
- obj-$(CONFIG_VFAT_FS)		+= vfat/
 +obj-$(CONFIG_VXEXT_FS)		+= vxext/
  obj-$(CONFIG_BFS_FS)		+= bfs/
  obj-$(CONFIG_ISO9660_FS)	+= isofs/
