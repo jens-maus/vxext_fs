@@ -39,7 +39,6 @@
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/buffer_head.h>
-#include <linux/smp_lock.h>
 #include "fat.h"
 
 // normally this function is used to analyze filenames and check
@@ -131,7 +130,7 @@ old_compare:
 	goto out;
 }
 
-static struct dentry_operations vxext_dentry_operations = {
+static const struct dentry_operations vxext_dentry_operations = {
 	.d_hash		= vxext_hash,
 	.d_compare	= vxext_cmp,
 };
@@ -494,7 +493,7 @@ static int do_vxext_rename(struct inode *old_dir, unsigned char *old_name,
       #ifndef VXEXT_FS
 		dotdot_de->starthi = cpu_to_le16(start >> 16);
       #endif
-		mark_buffer_dirty(dotdot_bh);
+		mark_buffer_dirty_inode(dotdot_bh, old_inode);
 		if (IS_DIRSYNC(new_dir)) {
 			err = sync_dirty_buffer(dotdot_bh);
 			if (err)
@@ -538,7 +537,7 @@ error_dotdot:
       #ifndef VXEXT_FS
 		dotdot_de->starthi = cpu_to_le16(start >> 16);
       #endif
-		mark_buffer_dirty(dotdot_bh);
+		mark_buffer_dirty_inode(dotdot_bh, old_inode);
 		corrupt |= sync_dirty_buffer(dotdot_bh);
 	}
 error_inode:
@@ -560,7 +559,7 @@ error_inode:
 		sinfo.bh = NULL;
 	}
 	if (corrupt < 0) {
-		fat_fs_panic(new_dir->i_sb,
+		fat_fs_error(new_dir->i_sb,
 			     "%s: Filesystem corrupted (i_pos %lld)",
 			     __func__, sinfo.i_pos);
 	}
