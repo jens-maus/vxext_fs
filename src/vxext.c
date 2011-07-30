@@ -91,7 +91,8 @@ static int vxext_find(struct inode *dir, const unsigned char *name, int len,
  * that the existing dentry can be used. The msdos fs routines will
  * return ENOENT or EINVAL as appropriate.
  */
-static int vxext_hash(struct dentry *dentry, struct qstr *qstr)
+static int vxext_hash(const struct dentry *dentry, const struct inode *inode,
+	       struct qstr *qstr)
 {
 	struct fat_mount_options *options = &MSDOS_SB(dentry->d_sb)->options;
 	unsigned char msdos_name[MSDOS_NAME];
@@ -107,16 +108,18 @@ static int vxext_hash(struct dentry *dentry, struct qstr *qstr)
  * Compare two msdos names. If either of the names are invalid,
  * we fall back to doing the standard name comparison.
  */
-static int vxext_cmp(struct dentry *dentry, struct qstr *a, struct qstr *b)
+static int vxext_cmp(const struct dentry *parent, const struct inode *pinode,
+		const struct dentry *dentry, const struct inode *inode,
+		unsigned int len, const char *str, const struct qstr *name)
 {
-	struct fat_mount_options *options = &MSDOS_SB(dentry->d_sb)->options;
+	struct fat_mount_options *options = &MSDOS_SB(parent->d_sb)->options;
 	unsigned char a_msdos_name[MSDOS_NAME], b_msdos_name[MSDOS_NAME];
 	int error;
 
-	error = vxext_format_name(a->name, a->len, a_msdos_name, options);
+  error = vxext_format_name(name->name, name->len, a_msdos_name, options);
 	if (error)
 		goto old_compare;
-	error = vxext_format_name(b->name, b->len, b_msdos_name, options);
+  error = vxext_format_name(str, len, b_msdos_name, options);
 	if (error)
 		goto old_compare;
 	error = memcmp(a_msdos_name, b_msdos_name, MSDOS_NAME);
@@ -125,8 +128,8 @@ out:
 
 old_compare:
 	error = 1;
-	if (a->len == b->len)
-		error = memcmp(a->name, b->name, a->len);
+	if (name->len == len)
+		error = memcmp(name->name, str, len);
 	goto out;
 }
 
@@ -166,11 +169,7 @@ static struct dentry *vxext_lookup(struct inode *dir, struct dentry *dentry,
 	}
 out:
 	unlock_super(sb);
-	dentry->d_op = &vxext_dentry_operations;
-	dentry = d_splice_alias(inode, dentry);
-	if (dentry)
-		dentry->d_op = &vxext_dentry_operations;
-	return dentry;
+	return d_splice_alias(inode, dentry);
 
 error:
 	unlock_super(sb);
@@ -610,31 +609,29 @@ static const struct inode_operations vxext_dir_inode_operations = {
 	.getattr	= fat_getattr,
 };
 
-static int vxext_fill_super(struct super_block *sb, void *data, int silent)
+static void setup(struct super_block *sb)
 {
-	int res;
-
-	res = fat_fill_super(sb, data, silent, &vxext_dir_inode_operations, 0);
-	if (res)
-		return res;
-
+	sb->s_d_op = &vxext_dentry_operations;
 	sb->s_flags |= MS_NOATIME;
-	sb->s_root->d_op = &vxext_dentry_operations;
-	return 0;
 }
 
-static int vxext_get_sb(struct file_system_type *fs_type,
-			int flags, const char *dev_name,
-			void *data, struct vfsmount *mnt)
+static int vxext_fill_super(struct super_block *sb, void *data, int silent)
 {
-	return get_sb_bdev(fs_type, flags, dev_name, data, vxext_fill_super,
-			   mnt);
+	return fat_fill_super(sb, data, silent, &vxext_dir_inode_operations,
+			     0, setup);
+}
+
+static struct dentry *vxext_mount(struct file_system_type *fs_type,
+			int flags, const char *dev_name,
+			void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, vxext_fill_super);
 }
 
 static struct file_system_type vxext_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "vxext",
-	.get_sb		= vxext_get_sb,
+	.mount		= vxext_mount,
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
@@ -668,7 +665,7 @@ static void __exit exit_vxext_fs(void)
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jens Langner <Jens.Langner@light-speed.de>");
 MODULE_DESCRIPTION("VxWorks extended DOS filesystem support");
-MODULE_VERSION("2.4");
+MODULE_VERSION("2.5");
 
 module_init(init_vxext_fs)
 module_exit(exit_vxext_fs)
