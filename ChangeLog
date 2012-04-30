@@ -3,6 +3,11 @@ VXEXT-FS - VxWorks extended DOS filesystem implementation
 ---------------------------------------------------------
 $Id$
 
+2012-04-30  Jens Langner <Jens.Langner@light-speed.de>
+
+  * misc: updated the sources to compile with linux kernels 
+    of version 3.0.0
+
 2010-05-03  Jens Langner <Jens.Langner@light-speed.de>
 
   * misc: updated the sources to compile with linux kernels 

@@ -611,14 +611,14 @@ static const struct inode_operations vxext_dir_inode_operations = {
 
 static void setup(struct super_block *sb)
 {
+  MSDOS_SB(sb)->dir_ops = &vxext_dir_inode_operations;
 	sb->s_d_op = &vxext_dentry_operations;
 	sb->s_flags |= MS_NOATIME;
 }
 
 static int vxext_fill_super(struct super_block *sb, void *data, int silent)
 {
-	return fat_fill_super(sb, data, silent, &vxext_dir_inode_operations,
-			     0, setup);
+	return fat_fill_super(sb, data, silent, 0, setup);
 }
 
 static struct dentry *vxext_mount(struct file_system_type *fs_type,
