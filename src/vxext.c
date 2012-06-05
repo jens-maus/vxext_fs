@@ -153,27 +153,19 @@ static struct dentry *vxext_lookup(struct inode *dir, struct dentry *dentry,
 
 	lock_super(sb);
 	err = vxext_find(dir, dentry->d_name.name, dentry->d_name.len, &sinfo);
-	if (err) {
-		if (err == -ENOENT) {
-			inode = NULL;
-			goto out;
-		}
-		goto error;
+	switch (err) {
+	case -ENOENT:
+		inode = NULL;
+		break;
+	case 0:
+		inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
+		brelse(sinfo.bh);
+		break;
+	default:
+		inode = ERR_PTR(err);
 	}
-
-	inode = fat_build_inode(sb, sinfo.de, sinfo.i_pos);
-	brelse(sinfo.bh);
-	if (IS_ERR(inode)) {
-		err = PTR_ERR(inode);
-		goto error;
-	}
-out:
 	unlock_super(sb);
 	return d_splice_alias(inode, dentry);
-
-error:
-	unlock_super(sb);
-	return ERR_PTR(err);
 }
 
 /***** Creates a directory entry (name is already formatted). */
@@ -344,7 +336,7 @@ static int vxext_mkdir(struct inode *dir, struct dentry *dentry, int mode)
 		/* the directory was completed, just return a error */
 		goto out;
 	}
-	inode->i_nlink = 2;
+	set_nlink(inode, 2);
 	inode->i_mtime = inode->i_atime = inode->i_ctime = ts;
 	/* timestamp is already written, so mark_inode_dirty() is unneeded. */
 
@@ -665,7 +657,7 @@ static void __exit exit_vxext_fs(void)
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jens Langner <Jens.Langner@light-speed.de>");
 MODULE_DESCRIPTION("VxWorks extended DOS filesystem support");
-MODULE_VERSION("2.5");
+MODULE_VERSION("2.6");
 
 module_init(init_vxext_fs)
 module_exit(exit_vxext_fs)
