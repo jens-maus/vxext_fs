@@ -44,11 +44,18 @@
 #define MSDOS_DPB_BITS	3		/* log2(MSDOS_DPB) */
 #define MSDOS_DPS	(SECTOR_SIZE / sizeof(struct msdos_dir_entry))
 #define MSDOS_DPS_BITS	3		/* log2(MSDOS_DPS) */
+#define MSDOS_LONGNAME	40		/* maximum name length */
+#define CF_LE_W(v)	le16_to_cpu(v)
+#define CF_LE_L(v)	le32_to_cpu(v)
+#define CT_LE_W(v)	cpu_to_le16(v)
+#define CT_LE_L(v)	cpu_to_le32(v)
 
 #undef MSDOS_SUPER_MAGIC
-#define MSDOS_SUPER_MAGIC 0x5657 // VW
+#define MSDOS_SUPER_MAGIC 0x5657 // VW (VXEXT)
 
-#define MSDOS_ROOT_INO	1	/* == MINIX_ROOT_INO */
+#define MSDOS_ROOT_INO	 1	/* The root inode number */
+#define MSDOS_FSINFO_INO 2	/* Used for managing the FSINFO block */
+
 #define MSDOS_DIR_BITS	6	/* log2(sizeof(struct msdos_dir_entry)) */
 
 /* directory limit */
@@ -74,18 +81,13 @@
 #define DELETED_FLAG	0xe5	/* marks file as deleted when in name[0] */
 #define IS_FREE(n)	(!*(n) || *(n) == DELETED_FLAG)
 
-/* valid file mode bits */
-#define MSDOS_VALID_MODE (S_IFREG | S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO)
-/* Convert attribute bits and a mask to the UNIX mode. */
-#define MSDOS_MKMODE(a, m) (m & (a & ATTR_RO ? S_IRUGO|S_IXUGO : S_IRWXUGO))
-
+#define FAT_LFN_LEN	40	/* maximum long name length */
 #define MSDOS_NAME	40	/* maximum name length */
-#define MSDOS_LONGNAME	40	/* maximum name length */
 #define MSDOS_SLOTS	21	/* max # of slots for short and long names */
-#define MSDOS_DOT       ".                                        " // "."
-#define MSDOS_DOTDOT    "..                                       " // ".."
+#define MSDOS_DOT	".                                        "	/* ".", padded to MSDOS_NAME chars */
+#define MSDOS_DOTDOT	"..                                       "	/* "..", padded to MSDOS_NAME chars */
 
-#define FAT_FIRST_ENT(s, x)	(0xFF00 | (x))
+#define FAT_FIRST_ENT(s, x) (0xFF00 | (x))
 
 /* start of data cluster's entry (number of reserved clusters) */
 #define FAT_START_ENT	2
@@ -115,6 +117,8 @@
 #define IS_FSINFO(x)	(le32_to_cpu((x)->signature1) == FAT_FSINFO_SIG1 \
 			 && le32_to_cpu((x)->signature2) == FAT_FSINFO_SIG2)
 
+#define FAT_STATE_DIRTY 0x01
+
 struct __fat_dirent {
 	long		d_ino;
 	__kernel_off_t	d_off;
@@ -130,6 +134,8 @@ struct __fat_dirent {
 /* <linux/videotext.h> has used 0x72 ('r') in collision, so skip a few */
 #define FAT_IOCTL_GET_ATTRIBUTES	_IOR('r', 0x10, __u32)
 #define FAT_IOCTL_SET_ATTRIBUTES	_IOW('r', 0x11, __u32)
+/*Android kernel has used 0x12, so we use 0x13*/
+#define FAT_IOCTL_GET_VOLUME_ID		_IOR('r', 0x13, __u32)
 
 struct fat_boot_sector {
 	__u8	ignored[3];	/* Boot strap short or near jump */
@@ -148,20 +154,48 @@ struct fat_boot_sector {
 	__le32	hidden;		/* hidden sectors (unused) */
 	__le32	total_sect;	/* number of sectors (if sectors == 0) */
 
-	/* The following fields are only used by FAT32 */
-	__le32	fat32_length;	/* sectors/FAT */
-	__le16	flags;		/* bit 8: fat mirroring, low 4: active fat */
-	__u8	version[2];	/* major, minor filesystem version */
-	__le32	root_cluster;	/* first cluster in root directory */
-	__le16	info_sector;	/* filesystem info sector */
-	__le16	backup_boot;	/* backup boot sector */
-   #if defined(VXEXT_FS)
-   __le16   reserved2; /* Unused */
-   __le16   sec_per_clus2; /* VXEXT stores the real sectors/clusters here */
-	__le16	reserved3[4];	/* Unused */
-   #else
-	__le16	reserved2[6];	/* Unused */
-   #endif
+	union {
+		struct {
+			/*  Extended BPB Fields for FAT16 */
+			__u8	drive_number;	/* Physical drive number */
+			__u8	state;		/* undocumented, but used
+						   for mount state. */
+			__u8	signature;  /* extended boot signature */
+			__u8	vol_id[4];	/* volume ID */
+			__u8	vol_label[11];	/* volume label */
+			__u8	fs_type[8];		/* file system type */
+			/* other fiealds are not added here */
+		} fat16;
+
+		struct {
+			/* only used by FAT32 */
+			__le32	length;		/* sectors/FAT */
+			__le16	flags;		/* bit 8: fat mirroring,
+						   low 4: active fat */
+			__u8	version[2];	/* major, minor filesystem
+						   version */
+			__le32	root_cluster;	/* first cluster in
+						   root directory */
+			__le16	info_sector;	/* filesystem info sector */
+			__le16	backup_boot;	/* backup boot sector */
+			#if defined(VXEXT_FS)
+			__le16  reserved2; /* Unused */
+			__le16  sec_per_clus2; /* VXEXT stores the real sectors/clusters here */
+			__le16  reserved3[4]; /* Unused */
+			#else
+			__le16	reserved2[6];	/* Unused */
+			/* Extended BPB Fields for FAT32 */
+			__u8	drive_number;   /* Physical drive number */
+			__u8    state;       	/* undocumented, but used
+						   for mount state. */
+			__u8	signature;  /* extended boot signature */
+			__u8	vol_id[4];	/* volume ID */
+			__u8	vol_label[11];	/* volume label */
+			__u8	fs_type[8];		/* file system type */
+			/* other fiealds are not added here */
+			#endif
+		} fat32;
+	};
 };
 
 struct fat_boot_fsinfo {
@@ -174,13 +208,26 @@ struct fat_boot_fsinfo {
 };
 
 struct msdos_dir_entry {
-   __u8     name[MSDOS_NAME]; // 0x00 - Filename max. 40 chars
-   __u8     reserved[13];     // 0x28 - Reserved
-   __u8     attr;             // 0x35 - File attributes
-   __le16   time;             // 0x36 - File creation time (ctime)
-   __le16   date;             // 0x38 - File creation date (cdate)
-   __le16   start;            // 0x40 - Starting cluster number
-   __le32   size;             // 0x42 - File size (in bytes)
+	#ifdef VXEXT_FS
+	__u8	name[MSDOS_NAME];/* 0x00 - Filename max. 40 chars */
+	__u8	reserved[13];     /* 0x28 - Reserved */
+	__u8	attr;     /* 0x35 - File attributes */
+	__le16	time;     /* 0x36 - File creation time (ctime) */
+	__le16	date;     /* 0x38 - File creation date (cdate) */
+	__le16	start;     /* 0x40 - Starting cluster number */
+	__le32	size;     /* 0x42 - File size (in bytes) */
+	#else
+	__u8	name[MSDOS_NAME];/* name and extension */
+	__u8	attr;		/* attribute bits */
+	__u8    lcase;		/* Case for base and extension */
+	__u8	ctime_cs;	/* Creation time, centiseconds (0-199) */
+	__le16	ctime;		/* Creation time */
+	__le16	cdate;		/* Creation date */
+	__le16	adate;		/* Last access date */
+	__le16	starthi;	/* High 16 bits of cluster in FAT32 */
+	__le16	time,date,start;/* time, date and first cluster */
+	__le32	size;		/* file size (in bytes) */
+  #endif
 };
 
 /* Up to 13 characters of the name */
@@ -201,6 +248,7 @@ struct msdos_dir_slot {
 #include <linux/string.h>
 #include <linux/nls.h>
 #include <linux/fs.h>
+#include <linux/hash.h>
 #include <linux/mutex.h>
 #include <linux/ratelimit.h>
 
@@ -217,16 +265,21 @@ struct msdos_dir_slot {
 #define FAT_ERRORS_PANIC	2      /* panic on error */
 #define FAT_ERRORS_RO		3      /* remount r/o on error */
 
+#define FAT_NFS_STALE_RW	1      /* NFS RW support, can cause ESTALE */
+#define FAT_NFS_NOSTALE_RO	2      /* NFS RO support, no ESTALE issue */
+
 struct fat_mount_options {
-	uid_t fs_uid;
-	gid_t fs_gid;
+	kuid_t fs_uid;
+	kgid_t fs_gid;
 	unsigned short fs_fmask;
 	unsigned short fs_dmask;
 	unsigned short codepage;  /* Codepage for shortname conversions */
+	int time_offset;	   /* Offset of timestamps from UTC (in minutes) */
 	char *iocharset;          /* Charset used for filename input/display */
 	unsigned short shortname; /* flags for shortname display/create rule */
 	unsigned char name_check; /* r = relaxed, n = normal, s = strict */
 	unsigned char errors;	  /* On error: continue, panic, remount-ro */
+	unsigned char nfs;	  /* NFS support: nostale_ro, stale_rw */
 	unsigned short allow_utime;/* permission for setting the [am]time */
 	unsigned quiet:1,         /* set = fake successful chmods and chowns */
 		 showexec:1,      /* set = only set x bit for com/exe/bat */
@@ -239,7 +292,7 @@ struct fat_mount_options {
 		 flush:1,	  /* write things quickly */
 		 nocase:1,	  /* Does this need case conversion? 0=need case conversion*/
 		 usefree:1,	  /* Use free_clusters for FAT32 */
-		 tz_utc:1,	  /* Filesystem timestamps are in UTC */
+		 tz_set:1,     /* Filesystem timestamps' offset set */
 		 rodir:1,     /* allow ATTR_RO for directory */
 		 discard:1;   /* Issue discard requests on deletions */
 };
@@ -255,7 +308,7 @@ struct msdos_sb_info {
 	unsigned short sec_per_clus; /* sectors/cluster */
 	unsigned short cluster_bits; /* log2(cluster_size) */
 	unsigned int cluster_size;   /* cluster size */
-	unsigned char fats,fat_bits; /* number of FATs, FAT bits (12 or 16) */
+	unsigned char fats, fat_bits; /* number of FATs, FAT bits (12 or 16) */
 	unsigned short fat_start;
 	unsigned long fat_length;    /* FAT start & length (sec.) */
 	unsigned long dir_start;
@@ -265,6 +318,8 @@ struct msdos_sb_info {
 	unsigned long root_cluster;  /* first cluster of the root directory */
 	unsigned long fsinfo_sector; /* sector number of FAT32 fsinfo */
 	struct mutex fat_lock;
+	struct mutex nfs_build_inode_lock;
+	struct mutex s_lock;
 	unsigned int prev_free;      /* previously allocated cluster number */
 	unsigned int free_clusters;  /* -1 if undefined */
 	unsigned int free_clus_valid; /* is free_clusters valid? */
@@ -274,15 +329,22 @@ struct msdos_sb_info {
 	const void *dir_ops;		     /* Opaque; default directory operations */
 	int dir_per_block;	     /* dir entries per block */
 	int dir_per_block_bits;	     /* log2(dir_per_block) */
+	unsigned int vol_id;		/*volume ID*/
 
 	int fatent_shift;
 	struct fatent_operations *fatent_ops;
 	struct inode *fat_inode;
+	struct inode *fsinfo_inode;
 
 	struct ratelimit_state ratelimit;
 
 	spinlock_t inode_hash_lock;
 	struct hlist_head inode_hashtable[FAT_HASH_SIZE];
+
+	spinlock_t dir_hash_lock;
+	struct hlist_head dir_hashtable[FAT_HASH_SIZE];
+
+	unsigned int dirty;           /* fs state before mount */
 };
 
 #define FAT_CACHE_VALID	0	/* special case for valid cache */
@@ -303,6 +365,7 @@ struct msdos_inode_info {
 	int i_attrs;		/* unused attribute bits */
 	loff_t i_pos;		/* on-disk position of directory entry or 0 */
 	struct hlist_node i_fat_hash;	/* hash by i_location */
+	struct hlist_node i_dir_hash;	/* hash by i_logstart */
 	struct rw_semaphore truncate_lock; /* protect bmap against truncate */
 	struct inode vfs_inode;
 };
@@ -335,7 +398,7 @@ static inline struct msdos_inode_info *MSDOS_I(struct inode *inode)
 static inline int fat_mode_can_hold_ro(struct inode *inode)
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(inode->i_sb);
-	mode_t mask;
+	umode_t mask;
 
 	if (S_ISDIR(inode->i_mode)) {
 		if (!sbi->options.rodir)
@@ -350,8 +413,8 @@ static inline int fat_mode_can_hold_ro(struct inode *inode)
 }
 
 /* Convert attribute bits and a mask to the UNIX mode. */
-static inline mode_t fat_make_mode(struct msdos_sb_info *sbi,
-				   u8 attrs, mode_t mode)
+static inline umode_t fat_make_mode(struct msdos_sb_info *sbi,
+				   u8 attrs, umode_t mode)
 {
 	if (attrs & ATTR_RO && !((attrs & ATTR_DIR) && !sbi->options.rodir))
 		mode &= ~S_IWUGO;
@@ -398,6 +461,27 @@ static inline sector_t fat_clus_to_blknr(struct msdos_sb_info *sbi, int clus)
 		+ sbi->data_start;
 }
 
+static inline void fat_get_blknr_offset(struct msdos_sb_info *sbi,
+				loff_t i_pos, sector_t *blknr, int *offset)
+{
+	*blknr = i_pos >> sbi->dir_per_block_bits;
+	*offset = i_pos & (sbi->dir_per_block - 1);
+}
+
+static inline loff_t fat_i_pos_read(struct msdos_sb_info *sbi,
+					struct inode *inode)
+{
+	loff_t i_pos;
+#if BITS_PER_LONG == 32
+	spin_lock(&sbi->inode_hash_lock);
+#endif
+	i_pos = MSDOS_I(inode)->i_pos;
+#if BITS_PER_LONG == 32
+	spin_unlock(&sbi->inode_hash_lock);
+#endif
+	return i_pos;
+}
+
 static inline void fat16_towchar(wchar_t *dst, const __u8 *src, size_t len)
 {
 #ifdef __BIG_ENDIAN
@@ -408,6 +492,25 @@ static inline void fat16_towchar(wchar_t *dst, const __u8 *src, size_t len)
 #else
 	memcpy(dst, src, len * 2);
 #endif
+}
+
+static inline int fat_get_start(const struct msdos_sb_info *sbi,
+				const struct msdos_dir_entry *de)
+{
+	int cluster = le16_to_cpu(de->start);
+	#ifndef VXEXT_FS
+	if (sbi->fat_bits == 32)
+		cluster |= (le16_to_cpu(de->starthi) << 16);
+	#endif
+	return cluster;
+}
+
+static inline void fat_set_start(struct msdos_dir_entry *de, int cluster)
+{
+	de->start   = cpu_to_le16(cluster);
+	#ifndef VXEXT_FS
+	de->starthi = cpu_to_le16(cluster >> 16);
+	#endif
 }
 
 static inline void fatwchar_to16(__u8 *dst, const wchar_t *src, size_t len)
@@ -445,8 +548,10 @@ extern int fat_dir_empty(struct inode *dir);
 extern int fat_subdirs(struct inode *dir);
 extern int fat_scan(struct inode *dir, const unsigned char *name,
 		    struct fat_slot_info *sinfo);
+extern int fat_scan_logstart(struct inode *dir, int i_logstart,
+			     struct fat_slot_info *sinfo);
 extern int fat_get_dotdot_entry(struct inode *dir, struct buffer_head **bh,
-				struct msdos_dir_entry **de, loff_t *i_pos);
+				struct msdos_dir_entry **de);
 extern int fat_alloc_new_dir(struct inode *dir, struct timespec *ts);
 extern int fat_add_entries(struct inode *dir, void *slots, int nr_slots,
 			   struct fat_slot_info *sinfo);
@@ -506,7 +611,7 @@ extern long fat_generic_ioctl(struct file *filp, unsigned int cmd,
 			      unsigned long arg);
 extern const struct file_operations fat_file_operations;
 extern const struct inode_operations fat_file_inode_operations;
-extern int fat_setattr(struct dentry * dentry, struct iattr * attr);
+extern int fat_setattr(struct dentry *dentry, struct iattr *attr);
 extern void fat_truncate_blocks(struct inode *inode, loff_t offset);
 extern int fat_getattr(struct vfsmount *mnt, struct dentry *dentry,
 		       struct kstat *stat);
@@ -522,9 +627,15 @@ extern struct inode *fat_build_inode(struct super_block *sb,
 extern int fat_sync_inode(struct inode *inode);
 extern int fat_fill_super(struct super_block *sb, void *data, int silent,
 			int isvfat, void (*setup)(struct super_block *));
+extern int fat_fill_inode(struct inode *inode, struct msdos_dir_entry *de);
 
 extern int fat_flush_inodes(struct super_block *sb, struct inode *i1,
 		            struct inode *i2);
+static inline unsigned long fat_dir_hash(int logstart)
+{
+ return hash_32(logstart, FAT_HASH_BITS);
+}
+
 /* fat/misc.c */
 extern __printf(3, 4) __cold
 void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...);
@@ -534,6 +645,11 @@ void __fat_fs_error(struct super_block *sb, int report, const char *fmt, ...);
 	__fat_fs_error(sb, __ratelimit(&MSDOS_SB(sb)->ratelimit), fmt , ## args)
 __printf(3, 4) __cold
 void fat_msg(struct super_block *sb, const char *level, const char *fmt, ...);
+#define fat_msg_ratelimit(sb, level, fmt, args...)	\
+	do {	\
+			if (__ratelimit(&MSDOS_SB(sb)->ratelimit))	\
+				fat_msg(sb, level, fmt, ## args);	\
+	 } while (0)
 extern int fat_clusters_flush(struct super_block *sb);
 extern int fat_chain_add(struct inode *inode, int new_dclus, int nr_cluster);
 extern void fat_time_fat2unix(struct msdos_sb_info *sbi, struct timespec *ts,
@@ -544,6 +660,10 @@ extern int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs);
 
 int fat_cache_init(void);
 void fat_cache_destroy(void);
+
+/* fat/nfs.c */
+extern const struct export_operations fat_export_ops;
+extern const struct export_operations fat_export_ops_nostale;
 
 /* helper for printk */
 typedef unsigned long long llu;

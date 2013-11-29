@@ -32,7 +32,7 @@ ifneq ($(KERNELRELEASE),)
 
   obj-m := vxext.o
 
-	vxext-y := cache.o dir.o fatent.o file.o inode.o misc.o
+	vxext-y := cache.o dir.o fatent.o file.o inode.o misc.o nfs.o
 
 	EXTRA_CFLAGS := -DVXEXT_FS #-DDEBUG
 
