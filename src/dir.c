@@ -270,6 +270,9 @@ fat_shortname2uni(struct nls_table *nls, unsigned char *buf, int buf_size,
 {
 	int len = 0;
 
+	#ifdef VXEXT_FS
+	len = 1;
+	#else
 	if (opt & VFAT_SFN_DISPLAY_LOWER)
 		len =  fat_short2lower_uni(nls, buf, buf_size, uni_buf);
 	else if (opt & VFAT_SFN_DISPLAY_WIN95)
@@ -281,6 +284,7 @@ fat_shortname2uni(struct nls_table *nls, unsigned char *buf, int buf_size,
 			len = fat_short2uni(nls, buf, buf_size, uni_buf);
 	} else
 		len = fat_short2uni(nls, buf, buf_size, uni_buf);
+	#endif
 
 	return len;
 }
