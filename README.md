@@ -1,7 +1,7 @@
 /* vim:set ts=2 nowrap: ****************************************************
 
  VXEXT fs - VxWorks extended DOS filesystem support
- Copyright (c) 2004-2009 by Jens Langner <Jens.Langner@light-speed.de>
+ Copyright (c) 2004-2015 Jens Maus <mail@jens-maus.de>
 
  $Id$
 
@@ -24,8 +24,8 @@ AUTHOR
 Development started in July 2004 and a first 1.0 version was published in
 early August 2004. The current author is:
 
-Jens Langner <Jens.Langner@light-speed.de>
-http://www.jens-langner.de/
+Jens Maus <mail@jens-maus.de>
+http://jens-maus.de/
 
 INSTALLATION
 ----------------------------
