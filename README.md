@@ -1,5 +1,5 @@
-VXEXT FileSystem
-================
+VXEXT Linux FileSystem Module
+=============================
 The files you find in this directory are part of a reverse engineered 
 implementation of the so called VXEXT1.0 extended DOS filesystem shipped and
 used in the VxWorks Real-Time Operating System developed by Wind River, Inc.
