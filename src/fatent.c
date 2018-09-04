@@ -36,7 +36,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #ifndef VXEXT_FS
-#include <linux/msdos_fs.h>
+//#include <linux/msdos_fs.h>
 #endif
 #include <linux/blkdev.h>
 #include "fat.h"
