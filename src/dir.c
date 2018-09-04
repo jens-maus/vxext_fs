@@ -49,6 +49,7 @@
 #include <linux/buffer_head.h>
 #include <linux/compat.h>
 #include <linux/uaccess.h>
+#include <linux/iversion.h>
 #include <linux/kernel.h>
 #include "fat.h"
 
@@ -749,10 +750,11 @@ static int fat_readdir(struct file *file, struct dir_context *ctx)
 }
 
 #define FAT_IOCTL_FILLDIR_FUNC(func, dirent_type)			   \
-static int func(void *__buf, const char *name, int name_len,		   \
+static int func(struct dir_context *ctx, const char *name, int name_len,   \
 			     loff_t offset, u64 ino, unsigned int d_type)  \
 {									   \
-	struct fat_ioctl_filldir_callback *buf = __buf;			   \
+	struct fat_ioctl_filldir_callback *buf =			   \
+	container_of(ctx, struct fat_ioctl_filldir_callback, ctx); 	   \
 	struct dirent_type __user *d1 = buf->dirent;			   \
 	struct dirent_type __user *d2 = d1 + 1;				   \
 									   \
@@ -813,7 +815,7 @@ static int fat_ioctl_readdir(struct inode *inode, struct file *file,
 
 	buf.dirent = dirent;
 	buf.result = 0;
-	mutex_lock(&inode->i_mutex);
+	inode_lock(inode);
 	buf.ctx.pos = file->f_pos;
 	ret = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
@@ -821,7 +823,7 @@ static int fat_ioctl_readdir(struct inode *inode, struct file *file,
 				    short_only, both ? &buf : NULL);
 		file->f_pos = buf.ctx.pos;
 	}
-	mutex_unlock(&inode->i_mutex);
+	inode_unlock(inode);
 	if (ret >= 0)
 		ret = buf.result;
 	return ret;
@@ -1107,7 +1109,7 @@ int fat_remove_entries(struct inode *dir, struct fat_slot_info *sinfo)
 	brelse(bh);
 	if (err)
 		return err;
-	dir->i_version++;
+	inode_inc_iversion(dir);
 
 	if (nr_slots) {
 		/*
@@ -1122,7 +1124,7 @@ int fat_remove_entries(struct inode *dir, struct fat_slot_info *sinfo)
 		}
 	}
 
-	dir->i_mtime = dir->i_atime = CURRENT_TIME_SEC;
+	dir->i_mtime = dir->i_atime = current_time(dir);
 	if (IS_DIRSYNC(dir))
 		(void)fat_sync_inode(dir);
 	else
@@ -1184,7 +1186,7 @@ error:
 	return err;
 }
 
-int fat_alloc_new_dir(struct inode *dir, struct timespec *ts)
+int fat_alloc_new_dir(struct inode *dir, struct timespec64 *ts)
 {
 	struct super_block *sb = dir->i_sb;
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
